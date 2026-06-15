@@ -1,0 +1,35 @@
+name: Publish to AUR
+
+# Publishes the stable AUR package (packaging/aur/hyperflux) on each GitHub
+# Release, or on manual dispatch. Requires three repository secrets:
+#   AUR_USERNAME, AUR_EMAIL, AUR_SSH_PRIVATE_KEY
+# The AUR public key must be registered on the maintainer's AUR account.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Publish hyperflux to the AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
+        with:
+          pkgname: hyperflux
+          pkgbuild: packaging/aur/hyperflux/PKGBUILD
+          assets: |
+            packaging/aur/hyperflux/.SRCINFO
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ github.event.release.tag_name || github.ref_name }}"
+          updpkgsums: true
+          test: true
+          test_flags: "--syncdeps --noconfirm"
