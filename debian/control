@@ -1,0 +1,28 @@
+Source: hyperflux
+Section: net
+Priority: optional
+Maintainer: xAlcahest <xAlcahest@users.noreply.github.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ autoconf-archive,
+ gettext,
+ pkg-config,
+ libssl-dev,
+ txt2man
+Standards-Version: 4.6.2
+Homepage: https://github.com/Athanor-Lab/hyperflux
+Rules-Requires-Root: no
+
+Package: hyperflux
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends}
+Description: lightweight CLI download accelerator with URL range and list expansion
+ Hyperflux is a lightweight command line download accelerator and a fork of
+ Axel. It speeds up downloads by opening multiple connections to a server and
+ fetching different parts of the file in parallel.
+ .
+ It also understands URL expansion: a single URL containing {a,b}, {N..M} or
+ [N-M] patterns is expanded into separate downloads. The installed command is
+ "flux".
