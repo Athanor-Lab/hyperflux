@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+	<maintainer type="person">
+		<email>xAlcahest@users.noreply.github.com</email>
+		<name>xAlcahest</name>
+	</maintainer>
+	<longdescription lang="en">
+		Hyperflux is a lightweight command-line download accelerator forked
+		from Axel. It accelerates downloads by opening multiple connections to
+		a server and fetching different parts of a file in parallel. It also
+		expands a single URL's brace, range, and bracket patterns
+		({a,b}, {N..M}, [N-M]) into separate downloads. The installed binary
+		is "flux".
+	</longdescription>
+	<upstream>
+		<remote-id type="github">Athanor-Lab/hyperflux</remote-id>
+	</upstream>
+</pkgmetadata>
