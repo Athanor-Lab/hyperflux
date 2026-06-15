@@ -12,6 +12,6 @@ pkgbase = hyperflux
 	makedepends = txt2man
 	depends = openssl
 	source = hyperflux-1.0.0.tar.gz::https://github.com/Athanor-Lab/hyperflux/releases/download/v1.0.0/flux-1.0.0.tar.gz
-	sha256sums = SKIP
+	sha256sums = 3646dd6055d4cf89d96dd20fc4f434121a2360816a8e565dc2ab2ce62642213f
 
 pkgname = hyperflux
