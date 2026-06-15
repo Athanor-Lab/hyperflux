@@ -1,4 +1,4 @@
-src/axel.c
+src/flux.c
 src/conf.c
 src/conn.c
 src/ftp.c

@@ -1,8 +1,8 @@
-Roadmap for Axel v3 (by Philipp Hagemeister, 2008-2010)
+Roadmap for Hyperflux v3 (by Philipp Hagemeister, 2008-2010)
 ===================
 
-Note: This document provides only a rough overview what to do next. Refer to the bugtracker ( https://github.com/axel-download-accelerator/axel/issues ) for detailed information.
-Pre-release version numbers of Axel 3 will start with 2.99. Starting with the 3.x series, the following version scheme will be adopted:
+Note: This document provides only a rough overview what to do next. Refer to the bugtracker ( https://example.invalid/hyperflux ) for detailed information.
+Pre-release version numbers of Hyperflux 3 will start with 2.99. Starting with the 3.x series, the following version scheme will be adopted:
 
 x.y.z
 
@@ -40,13 +40,13 @@ Code structure
 * tcp.c
  should be checked. The functions look a little bit obscure to me. But maybe, that's just me. Before we implement #310638, we should include some round-robin trickery in here.
 * Removing MAX_STRING(#311085) and MAX_ADD_HEADERS. These are arbitrary restrictions and may hide a number of strange bugs. Furthermore, statically sized fields are a waste of memory.
-* Add die messages: Axel must not exit with != 0 without telling why.
-* Add debugging messages: When compiled with DEBUG, Axel could be more verbose. This won't harm anything and may serve as comments.
+* Add die messages: Hyperflux must not exit with != 0 without telling why.
+* Add debugging messages: When compiled with DEBUG, Hyperflux could be more verbose. This won't harm anything and may serve as comments.
 * Some functions could use a little bit of documentation.
 * Remove all logic from text.c
 * Ensure correct synchronization of thread state (volatile?)
-* Cleanup AXEL_LEGACY
-* rewrite axel-kapt to be sane (probably sh, or even #!/usr/bin/env kaptain suffices) or remove it in favor of a sane GUI
+* Cleanup FLUX_LEGACY
+* rewrite flux-kapt to be sane (probably sh, or even #!/usr/bin/env kaptain suffices) or remove it in favor of a sane GUI
 
 Bugs
 ====

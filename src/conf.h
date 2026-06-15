@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2001-2007 Wilmer van der Gaast
   Copyright 2008      Philipp Hagemeister
@@ -41,8 +41,8 @@
 
 /* Configuration handling include file */
 
-#ifndef AXEL_CONF_H
-#define AXEL_CONF_H
+#ifndef FLUX_CONF_H
+#define FLUX_CONF_H
 
 typedef struct {
 	char default_filename[MAX_STRING];
@@ -60,12 +60,12 @@ typedef struct {
 	int insecure;
 	int no_clobber;
 	enum {
-		AXEL_PROGRESS_STYLE_CLASSIC,
-		AXEL_PROGRESS_STYLE_ALTERNATIVE,
-		AXEL_PROGRESS_STYLE_PERCENTAGE,
+		FLUX_PROGRESS_STYLE_CLASSIC,
+		FLUX_PROGRESS_STYLE_ALTERNATIVE,
+		FLUX_PROGRESS_STYLE_PERCENTAGE,
 	} progress_style;
 
-	axel_if_t *interfaces;
+	flux_if_t *interfaces;
 
 	sa_family_t ai_family;
 
@@ -95,4 +95,4 @@ conf_hdr_make(char *dst, const char *k, const char *v)
 	snprintf(dst, sizeof(((conf_t *)0)->add_header[0]), "%s: %s", k, v);
 }
 
-#endif				/* AXEL_CONF_H */
+#endif				/* FLUX_CONF_H */

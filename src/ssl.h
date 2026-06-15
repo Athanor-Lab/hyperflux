@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2016-2017 Stephen Thirlwall
   Copyright 2017      Antonio Quartulli
@@ -38,8 +38,8 @@
 
 /* SSL interface */
 
-#if !defined(AXEL_SSL_H) && defined(HAVE_SSL)
-#define AXEL_SSL_H
+#if !defined(FLUX_SSL_H) && defined(HAVE_SSL)
+#define FLUX_SSL_H
 
 #include "config.h"
 
@@ -57,4 +57,4 @@ SSL *ssl_connect(int fd, char *hostname);
 void ssl_disconnect(SSL *ssl);
 bool ssl_validate_hostname(const char *hostname, const X509 *server_cert);
 
-#endif				/* AXEL_SSL_H */
+#endif				/* FLUX_SSL_H */

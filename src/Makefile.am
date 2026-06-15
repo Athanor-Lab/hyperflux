@@ -1,12 +1,12 @@
-bin_PROGRAMS = axel
-axel_SOURCES = \
+bin_PROGRAMS = flux
+flux_SOURCES = \
 	compat-android.h \
 	compat-bsd.h \
 	compat-ssl.h \
 	src/abuf.c \
 	src/abuf.h \
-	src/axel.c \
-	src/axel.h \
+	src/flux.c \
+	src/flux.h \
 	src/sleep.h \
 	src/sleep.c \
 	src/conf.c \
@@ -25,24 +25,26 @@ axel_SOURCES = \
 	src/ssl.h \
 	src/tcp.c \
 	src/tcp.h \
+	src/url_glob.c \
+	src/url_glob.h \
 	src/text.c
 
-axel_CFLAGS = $(AM_CFLAGS) $(PTHREAD_CFLAGS)
+flux_CFLAGS = $(AM_CFLAGS) $(PTHREAD_CFLAGS)
 AM_CFLAGS = $(WARN_CFLAGS) \
 	-Wno-declaration-after-statement \
 	-Wno-error=cast-align \
 	-Wno-error=inline
 
 if WITH_SSL
-axel_SOURCES += \
+flux_SOURCES += \
 	src/dn-match.c \
 	src/ssl.c \
 	src/ssl_verify.c
 AM_CFLAGS += $(SSL_CFLAGS)
 endif
 
-axel_LDADD = $(LIBOBJS) $(SSL_LIBS) $(LIBINTL) $(PTHREAD_LIBS)
-axel_CC = $(PTHREAD_CC)
+flux_LDADD = $(LIBOBJS) $(SSL_LIBS) $(LIBINTL) $(PTHREAD_LIBS)
+flux_CC = $(PTHREAD_CC)
 
 AM_CPPFLAGS = -DLOCALEDIR=\""$(localedir)"\"
 AM_CPPFLAGS += -D_BSD_SOURCE -D_DEFAULT_SOURCE

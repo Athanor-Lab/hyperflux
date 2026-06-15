@@ -38,7 +38,7 @@
 #include <openssl/x509v3.h>
 #endif
 
-#include "axel.h"
+#include "flux.h"
 
 inline static int
 match(const char *hostname, ASN1_STRING *certname)

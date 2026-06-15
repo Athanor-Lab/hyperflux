@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2020  Ismael Luceno
 
@@ -43,7 +43,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-#include "axel.h"
+#include "flux.h"
 
 
 /**

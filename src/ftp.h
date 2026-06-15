@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2001-2007 Wilmer van der Gaast
   Copyright 2008      Y Giridhar Appaji Nag
@@ -40,8 +40,8 @@
 
 /* FTP control include file */
 
-#ifndef AXEL_FTP_H
-#define AXEL_FTP_H
+#ifndef FLUX_FTP_H
+#define FLUX_FTP_H
 
 #define FTP_PASSIVE	1
 #define FTP_PORT	2
@@ -69,4 +69,4 @@ int ftp_cwd(ftp_t *conn, char *cwd);
 int ftp_data(ftp_t *conn, unsigned io_timeout);
 off_t ftp_size(ftp_t *conn, char *file, int maxredir, unsigned io_timeout);
 
-#endif				/* AXEL_FTP_H */
+#endif				/* FLUX_FTP_H */

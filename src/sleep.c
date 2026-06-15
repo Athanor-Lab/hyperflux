@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2017, 2020 Ismael Luceno
 
@@ -44,7 +44,7 @@
 
 
 int
-axel_sleep(struct timespec delay)
+flux_sleep(struct timespec delay)
 {
 	int res;
 	while ((res = nanosleep(&delay, &delay)) && errno == EINTR) ;

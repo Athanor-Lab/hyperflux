@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2001-2007 Wilmer van der Gaast
   Copyright 2017      Antonio Quartulli
@@ -38,8 +38,8 @@
 
 /* filesearching.com searcher include file */
 
-#ifndef AXEL_SEARCH_H
-#define AXEL_SEARCH_H
+#ifndef FLUX_SEARCH_H
+#define FLUX_SEARCH_H
 
 typedef struct {
 	char url[MAX_STRING];
@@ -53,4 +53,4 @@ int search_makelist(search_t *results, char *url);
 int search_getspeeds(search_t *results, int count);
 void search_sortlist(search_t *results, int count);
 
-#endif				/* AXEL_SEARCH_H */
+#endif				/* FLUX_SEARCH_H */

@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2001-2007 Wilmer van der Gaast
   Copyright 2008      Y Giridhar Appaji Nag
@@ -43,7 +43,7 @@
 /* filesearching.com searcher */
 
 #include "config.h"
-#include "axel.h"
+#include "flux.h"
 #include "sleep.h"
 
 static void *search_speedtest(void *r);
@@ -105,13 +105,13 @@ search_makelist(search_t *results, char *orig_url)
 	memset(conn, 0, sizeof(conn_t));
 
 	conn->conf = results->conf;
-	t = axel_gettime();
+	t = flux_gettime();
 	if (!conn_set(conn, orig_url) || !conn_init(conn) || !conn_info(conn))
 		return -1;
 
 	size_t orig_len = strlcpy(results[0].url, orig_url,
 				  sizeof(results[0].url));
-	results[0].speed = 1 + 1000 * (axel_gettime() - t);
+	results[0].speed = 1 + 1000 * (flux_gettime() - t);
 	results[0].size = conn->size;
 	int nresults = 1;
 
@@ -225,11 +225,11 @@ search_getspeeds(search_t *results, int count)
 		}
 	}
 
-	for (int running = 0; left > 0; axel_sleep(delay)) {
+	for (int running = 0; left > 0; flux_sleep(delay)) {
 		for (int i = 0; i < count; i++) {
 			switch (results[i].speed) {
 			case SPEED_ACTIVE:
-				if (axel_gettime() < results[i].speed_start_time
+				if (flux_gettime() < results[i].speed_start_time
 				    + results->conf->search_timeout)
 					continue; // not timed out yet
 				pthread_cancel(*results[i].speed_thread);
@@ -242,7 +242,7 @@ search_getspeeds(search_t *results, int count)
 				if (running >= results->conf->search_threads)
 					continue; // running too many, skip
 				results[i].speed = SPEED_ACTIVE;
-				results[i].speed_start_time = axel_gettime();
+				results[i].speed_start_time = flux_gettime();
 				if (pthread_create(results[i].speed_thread,
 						   NULL, search_speedtest,
 						   &results[i]) == 0)
@@ -294,7 +294,7 @@ search_speedtest(void *r)
 	    && conn_info(conn)
 	    && conn->size == results->size)
 		/* Add one because it mustn't be zero */
-		results->speed = 1 + 1000 * (axel_gettime() - results->speed_start_time);
+		results->speed = 1 + 1000 * (flux_gettime() - results->speed_start_time);
 	else
 		results->speed = SPEED_FAILED;
 

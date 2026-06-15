@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2017, 2020 Ismael Luceno
 
@@ -34,9 +34,9 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#ifndef AXEL_SLEEP_H
-#define AXEL_SLEEP_H
+#ifndef FLUX_SLEEP_H
+#define FLUX_SLEEP_H
 
-int axel_sleep(struct timespec delay);
+int flux_sleep(struct timespec delay);
 
-#endif /* AXEL_SLEEP_H */
+#endif /* FLUX_SLEEP_H */

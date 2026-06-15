@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2016      Sjjad Hashemian
   Copyright 2016-2017 Stephen Thirlwall
@@ -51,7 +51,7 @@
 #include <openssl/err.h>
 #endif
 
-#include "axel.h"
+#include "flux.h"
 
 static pthread_mutex_t ssl_lock;
 static bool ssl_inited = false;

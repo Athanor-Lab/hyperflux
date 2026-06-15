@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2001-2007 Wilmer van der Gaast
   Copyright 2008      Philipp Hagemeister
@@ -44,7 +44,7 @@
 /* Configuration handling file */
 
 #include "config.h"
-#include "axel.h"
+#include "flux.h"
 
 /* Some nifty macro's.. */
 #define MATCH if (0);
@@ -58,7 +58,7 @@ static int parse_interfaces(conf_t *conf, char *s);
 __attribute__((format(scanf, 2, 3)))
 #endif /* __GNUC__ */
 static int
-axel_fscanf(FILE *fp, const char *format, ...)
+flux_fscanf(FILE *fp, const char *format, ...)
 {
 	va_list params;
 	int ret;
@@ -81,11 +81,11 @@ parse_progress_style(conf_t *conf, const char *value)
 {
 	if (!strcasecmp(value, "auto")) {/* no-op */}
 	else if (!strcasecmp(value, "alternative"))
-		conf->progress_style = AXEL_PROGRESS_STYLE_ALTERNATIVE;
+		conf->progress_style = FLUX_PROGRESS_STYLE_ALTERNATIVE;
 	else if (!strcasecmp(value, "classic"))
-		conf->progress_style = AXEL_PROGRESS_STYLE_CLASSIC;
+		conf->progress_style = FLUX_PROGRESS_STYLE_CLASSIC;
 	else if (!strcasecmp(value, "percent"))
-		conf->progress_style = AXEL_PROGRESS_STYLE_PERCENTAGE;
+		conf->progress_style = FLUX_PROGRESS_STYLE_PERCENTAGE;
 	else
 		fprintf(stderr, _("Unknown progress bar style \"%s\"\n"), value);
 	return 1;
@@ -125,9 +125,9 @@ conf_loadfile(conf_t *conf, const char *file)
 
 		*s = 0;
 
-		if (!(ret = axel_fscanf(fp, "%100[^\n#]s", s)))
+		if (!(ret = flux_fscanf(fp, "%100[^\n#]s", s)))
 			break;
-		if (!(ret = axel_fscanf(fp, "%*[^\n]s")))
+		if (!(ret = flux_fscanf(fp, "%*[^\n]s")))
 			break;
 		if ((fgetc(fp) != '\n') && !feof(fp)) {	/* Skip newline */
 			fprintf(stderr, "Expected newline\n");
@@ -285,23 +285,42 @@ conf_init(conf_t *conf)
 	/* Detect if stdout is a tty, set the default indicator to alternate.
 	 * Otherwise, keep it to original. */
 	conf->progress_style = isatty(STDOUT_FILENO)
-		? AXEL_PROGRESS_STYLE_ALTERNATIVE
-		: AXEL_PROGRESS_STYLE_CLASSIC;
+		? FLUX_PROGRESS_STYLE_ALTERNATIVE
+		: FLUX_PROGRESS_STYLE_CLASSIC;
 
 	if ((s2 = getenv("http_proxy")) || (s2 = getenv("HTTP_PROXY")))
 		strlcpy(conf->http_proxy, s2, sizeof(conf->http_proxy));
 
-	if (!conf_loadfile(conf, ETCDIR "/axelrc"))
+	/* Prefer fluxrc, fall back to the legacy axelrc if fluxrc is absent. */
+	if (access(ETCDIR "/fluxrc", F_OK) != 0
+	    && access(ETCDIR "/axelrc", F_OK) == 0) {
+		if (!conf_loadfile(conf, ETCDIR "/axelrc"))
+			return 0;
+	} else if (!conf_loadfile(conf, ETCDIR "/fluxrc"))
 		return 0;
 
 	if ((s2 = getenv("HOME")) != NULL) {
 		char s[MAX_STRING];
 		int ret;
 
-		ret = snprintf(s, sizeof(s), "%s/.axelrc", s2);
+		ret = snprintf(s, sizeof(s), "%s/.fluxrc", s2);
 		if (ret >= (int)sizeof(s)) {
 			fprintf(stderr, _("HOME env variable too long\n") );
 			return 0;
+		}
+
+		/* Prefer ~/.fluxrc, fall back to the legacy ~/.axelrc. */
+		if (access(s, F_OK) != 0) {
+			char legacy[MAX_STRING];
+
+			ret = snprintf(legacy, sizeof(legacy), "%s/.axelrc", s2);
+			if (ret >= (int)sizeof(legacy)) {
+				fprintf(stderr, _("HOME env variable too long\n"));
+				return 0;
+			}
+
+			if (access(legacy, F_OK) == 0)
+				strlcpy(s, legacy, sizeof(s));
 		}
 
 		if (!conf_loadfile(conf, s))
@@ -329,11 +348,11 @@ int
 parse_interfaces(conf_t *conf, char *s)
 {
 	char *s2;
-	axel_if_t *iface;
+	flux_if_t *iface;
 
 	iface = conf->interfaces->next;
 	while (iface != conf->interfaces) {
-		axel_if_t *i;
+		flux_if_t *i;
 
 		i = iface->next;
 		free(iface);

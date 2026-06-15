@@ -1,7 +1,7 @@
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: axel 2.17.14\n"
+"Project-Id-Version: Hyperflux 1.0.0\n"
 "Report-Msgid-Bugs-To: https://github.com/axel-download-accelerator/axel/"
 "issues\n"
 "POT-Creation-Date: \n"
@@ -13,80 +13,80 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: src/axel.c:150
+#: src/flux.c:150
 msgid "Buffer resized for this speed."
 msgstr "已調整緩衝區大小以配合此速度。"
 
-#: src/axel.c:179
+#: src/flux.c:179
 msgid "Could not parse URL.\n"
 msgstr "無法解析 URL。\n"
 
-#: src/axel.c:201
+#: src/flux.c:201
 #, c-format
 msgid "File '%s' already there; not retrieving.\n"
 msgstr "檔案 '%s' 已存在，將略過下載\n"
 
-#: src/axel.c:206
+#: src/flux.c:206
 #, c-format
 msgid "Incomplete download found, ignoring no-clobber option\n"
 msgstr "找到未完成的下載，忽略 no-clobber 選項\n"
 
-#: src/axel.c:223
+#: src/flux.c:223
 #, c-format
 msgid "ERROR %d: %s.\n"
 msgstr "錯誤 %d：%s。\n"
 
-#: src/axel.c:237
+#: src/flux.c:237
 #, c-format
 msgid "File size: %s (%jd bytes)"
 msgstr "檔案大小：%s（%jd 位元組）"
 
-#: src/axel.c:240
+#: src/flux.c:240
 msgid "File size: unavailable"
 msgstr "檔案大小：無法取得"
 
-#: src/axel.c:269
+#: src/flux.c:269
 #, c-format
 msgid "Opening output file %s"
 msgstr "開啟輸出檔案 %s"
 
-#: src/axel.c:276
+#: src/flux.c:276
 msgid "Server unsupported, starting from scratch with one connection."
 msgstr "伺服器不支援，從頭開始並使用單一連線。"
 
-#: src/axel.c:293
+#: src/flux.c:293
 #, c-format
 msgid "%s.st: Error, truncated state file\n"
 msgstr "%s.st：錯誤，狀態檔案被截斷\n"
 
-#: src/axel.c:301
+#: src/flux.c:301
 #, c-format
 msgid "Bogus number of connections stored in state file\n"
 msgstr "狀態檔案中儲存的連線數量不正確\n"
 
-#: src/axel.c:313
+#: src/flux.c:313
 #, c-format
 msgid "State file has old format.\n"
 msgstr "狀態檔案的格式較舊。\n"
 
-#: src/axel.c:346
+#: src/flux.c:346
 #, c-format
 msgid "State file found: %jd bytes downloaded, %jd to go."
 msgstr "找到狀態檔案：%jd 位元組已下載，還剩 %jd 位元組。"
 
-#: src/axel.c:352 src/axel.c:363
+#: src/flux.c:352 src/flux.c:363
 msgid "Error opening local file"
 msgstr "開啟本機檔案時出錯"
 
-#: src/axel.c:376
+#: src/flux.c:376
 msgid "Crappy filesystem/OS.. Working around. :-("
 msgstr "檔案系統/作業系統有問題.. 正在解決。:-( "
 
-#: src/axel.c:389
+#: src/flux.c:389
 msgid "Error creating local file"
 msgstr "建立本機檔案時出錯"
 
-#: src/axel.c:430
+#: src/flux.c:430
 #, c-format
 msgid ""
 "\n"
@@ -95,59 +95,59 @@ msgstr ""
 "\n"
 "重新啟動連線 %d\n"
 
-#: src/axel.c:459
+#: src/flux.c:459
 msgid "Starting download"
 msgstr "開始下載"
 
-#: src/axel.c:469 src/axel.c:652
+#: src/flux.c:469 src/flux.c:652
 #, c-format
 msgid "Connection %i downloading from %s:%i using interface %s"
 msgstr "連線 %i 正在從 %s:%i 使用介面 %s 下載"
 
-#: src/axel.c:479 src/axel.c:664
+#: src/flux.c:479 src/flux.c:664
 msgid "pthread error!!!"
 msgstr "pthread 錯誤!!!"
 
-#: src/axel.c:525
+#: src/flux.c:525
 #, c-format
 msgid "Error while waiting for connection: %s"
 msgstr "等待連線時出錯：%s"
 
-#: src/axel.c:557
+#: src/flux.c:557
 #, c-format
 msgid "Connection %i timed out"
 msgstr "連線 %i 逾時"
 
-#: src/axel.c:570
+#: src/flux.c:570
 #, c-format
 msgid "Error on connection %i! Connection closed"
 msgstr "連線 %i 出錯！連線已關閉"
 
-#: src/axel.c:584
+#: src/flux.c:584
 #, c-format
 msgid "Connection %i unexpectedly closed"
 msgstr "連線 %i 突然關閉"
 
-#: src/axel.c:588 src/axel.c:604
+#: src/flux.c:588 src/flux.c:604
 #, c-format
 msgid "Connection %i finished"
 msgstr "連線 %i 完成"
 
-#: src/axel.c:614
+#: src/flux.c:614
 msgid "Write error!"
 msgstr "寫入錯誤！"
 
-#: src/axel.c:716
+#: src/flux.c:716
 #, c-format
 msgid "Error while enforcing throttling: %s"
 msgstr "執行限速時出錯：%s"
 
-#: src/axel.c:901
+#: src/flux.c:903
 #, c-format
 msgid "Too few bytes remaining, forcing a single connection\n"
 msgstr "剩餘位元組太少，強制使用單一連線\n"
 
-#: src/axel.c:920
+#: src/flux.c:922
 #, c-format
 msgid "Downloading %jd-%jd using conn. %i\n"
 msgstr "下載 %jd-%jd 正在使用連線 %i\n"
@@ -177,7 +177,7 @@ msgstr "要求的連線數量過多，最大值為 %i\n"
 msgid "Error in %s line %i.\n"
 msgstr "%s 的第 %i 行出錯。\n"
 
-#: src/conf.c:303
+#: src/conf.c:308 src/conf.c:318
 #, c-format
 msgid "HOME env variable too long\n"
 msgstr "HOME 環境變數過長\n"
@@ -246,79 +246,104 @@ msgstr "無效的代理伺服器字串：%s\n"
 msgid "Connection gone while writing.\n"
 msgstr "寫入時連線已斷。\n"
 
-#: src/text.c:151
+#: src/text.c:158
 #, c-format
 msgid ""
 "Too many custom headers (-H)! Currently only %u custom headers can be "
 "appended.\n"
-msgstr ""
-"自訂標頭（-H）過多！目前只能附加 %u 個自訂標頭。\n"
+msgstr "自訂標頭（-H）過多！目前只能附加 %u 個自訂標頭。\n"
 
-#: src/text.c:227
+#: src/text.c:234
 #, c-format
 msgid "Can't redirect stdout to /dev/null.\n"
 msgstr "無法將 stdout 重新導向 /dev/null。\n"
 
-#: src/text.c:269
+#: src/text.c:278
 #, c-format
 msgid "Error when trying to read URL (Too long?).\n"
 msgstr "嘗試讀取 URL 時出錯（URL 太長？）。\n"
 
-#: src/text.c:277
+#: src/text.c:288
 #, c-format
 msgid "Can't handle URLs of length over %zu\n"
 msgstr "無法處理長度超過 %zu 的 URL\n"
 
-#: src/text.c:284
-#, c-format
-msgid "Initializing download: %s\n"
-msgstr "初始化下載：%s\n"
-
-#: src/text.c:293
+#: src/text.c:303
 #, c-format
 msgid "Doing search...\n"
 msgstr "正在搜尋...\n"
 
-#: src/text.c:296
+#: src/text.c:306
 #, c-format
 msgid "File not found\n"
 msgstr "找不到檔案\n"
 
-#: src/text.c:300
+#: src/text.c:311
 #, c-format
 msgid "Testing speeds, this can take a while...\n"
 msgstr "正在測試速度，這可能需要一些時間...\n"
 
-#: src/text.c:303
+#: src/text.c:314
 #, c-format
 msgid "Speed testing failed\n"
 msgstr "速度測試失敗\n"
 
-#: src/text.c:309
+#: src/text.c:322
 #, c-format
 msgid "%i usable servers found, will use these URLs:\n"
 msgstr "找到 %i 個可用的伺服器，將使用這些 URL：\n"
 
-#: src/text.c:312
+#: src/text.c:325
 msgid "Speed"
 msgstr "速度"
 
-#: src/text.c:356
+#: src/text.c:339
+#, c-format
+msgid "Invalid URL pattern, or too many URLs (max %d).\n"
+msgstr ""
+
+#: src/text.c:348
+#, c-format
+msgid ""
+"Refusing to write %zu downloads to a single file '%s'; use a directory or #N "
+"in --output.\n"
+msgstr ""
+
+#: src/text.c:359
+#, c-format
+msgid ""
+"\n"
+"=== %zu/%zu: %s ===\n"
+msgstr ""
+
+#: src/text.c:378
+#, c-format
+msgid ""
+"\n"
+"%zu of %zu downloads completed.\n"
+msgstr ""
+
+#: src/text.c:423
+#, c-format
+msgid "Initializing download: %s\n"
+msgstr "初始化下載：%s\n"
+
+#: src/text.c:446
 #, c-format
 msgid "Filename too long!\n"
 msgstr "檔名太長！\n"
 
-#: src/text.c:369
+#: src/text.c:459
 #, c-format
 msgid "No state file, cannot resume!\n"
 msgstr "沒有狀態檔案，無法恢復下載！\n"
 
-#: src/text.c:373
+#: src/text.c:463
 #, c-format
 msgid "State file found, but no downloaded data. Starting from scratch.\n"
 msgstr "找到狀態檔案，但沒有已下載的資料。重新開始下載。\n"
 
-#: src/text.c:461
+#: src/text.c:551
 #, c-format
 msgid ""
 "\n"
@@ -327,51 +352,51 @@ msgstr ""
 "\n"
 "已花費 %s 下載了 %s。 (%.2f KB/s)\n"
 
-#: src/text.c:498
+#: src/text.c:660
 msgid "Kilo"
 msgstr "K"
 
-#: src/text.c:498
+#: src/text.c:660
 msgid "Mega"
 msgstr "M"
 
-#: src/text.c:498
+#: src/text.c:660
 msgid "Giga"
 msgstr "G"
 
-#: src/text.c:498
+#: src/text.c:660
 msgid "Tera"
 msgstr "T"
 
-#: src/text.c:504
+#: src/text.c:666
 #, c-format
 msgid "%g %sbyte(s)"
 msgstr "%g %s 位元組"
 
-#: src/text.c:520
+#: src/text.c:682
 #, c-format
 msgid "%i:%02i:%02i hour(s)"
 msgstr "%i 時 %02i 分 %02i 秒"
 
-#: src/text.c:522
+#: src/text.c:684
 #, c-format
 msgid "%i:%02i minute(s)"
 msgstr "%i 分 %02i 秒"
 
-#: src/text.c:524
+#: src/text.c:686
 #, c-format
 msgid "%i second(s)"
 msgstr "%i 秒"
 
-#: src/text.c:626
+#: src/text.c:788
 #, c-format
 msgid "Can't setup alternate output. Deactivating.\n"
 msgstr "無法設定替代輸出。停用。\n"
 
-#: src/text.c:689
-#, c-format
+#: src/text.c:851
+#, fuzzy, c-format
 msgid ""
-"Usage: axel [options] url1 [url2] [url...]\n"
+"Usage: flux [options] url1 [url2] [url...]\n"
 "\n"
 "-s x\tSpecify maximum speed (bytes per second)\n"
 "-n x\tSpecify maximum number of connections\n"
@@ -392,7 +417,7 @@ msgid ""
 "-T x\tSet I/O and connection timeout\n"
 "-V\tVersion information\n"
 "\n"
-"Visit https://github.com/axel-download-accelerator/axel/issues\n"
+"Visit https://github.com/flux-download-accelerator/flux/issues\n"
 msgstr ""
 "使用方法：axel [選項] url1 [url2] [url...]\n"
 "\n"
@@ -417,10 +442,10 @@ msgstr ""
 "\n"
 "請至 https://github.com/axel-download-accelerator/axel/issues 回報問題\n"
 
-#: src/text.c:712
-#, c-format
+#: src/text.c:874
+#, fuzzy, c-format
 msgid ""
-"Usage: axel [options] url1 [url2] [url...]\n"
+"Usage: flux [options] url1 [url2] [url...]\n"
 "\n"
 "--max-speed=x\t\t-s x\tSpecify maximum speed (bytes per second)\n"
 "--num-connections=x\t-n x\tSpecify maximum number of connections\n"
@@ -443,7 +468,7 @@ msgid ""
 "--timeout=x\t\t-T x\tSet I/O and connection timeout\n"
 "--version\t\t-V\tVersion information\n"
 "\n"
-"Visit https://github.com/axel-download-accelerator/axel/issues to report "
+"Visit https://github.com/flux-download-accelerator/flux/issues to report "
 "bugs\n"
 msgstr ""
 "使用方法：axel [選項] url1 [url2] [url...]\n"
@@ -470,16 +495,16 @@ msgstr ""
 "\n"
 "請至 https://github.com/axel-download-accelerator/axel/issues 回報問題\n"
 
-#: src/text.c:741
-#, c-format
-msgid "Axel %s (%s)\n"
+#: src/text.c:903
+#, fuzzy, c-format
+msgid "Hyperflux %s (%s)\n"
 msgstr "Axel %s（%s）\n"
 
-#: src/text.c:755
+#: src/text.c:917
 msgid "and others."
 msgstr "及其他貢獻者。"
 
-#: src/text.c:756
+#: src/text.c:918
 msgid ""
 "Please, see the CREDITS file.\n"
 "\n"

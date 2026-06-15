@@ -1,6 +1,6 @@
 msgid ""
 msgstr ""
-"Project-Id-Version: axel\n"
+"Project-Id-Version: Hyperflux 1.0.0\n"
 "POT-Creation-Date: \n"
 "PO-Revision-Date: \n"
 "Last-Translator: Temuri Doghonadze <temuri.doghonadze@gmail.com>\n"
@@ -12,81 +12,81 @@ msgstr ""
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 "X-Generator: Poedit 3.2.2\n"
 
-#: src/axel.c:150
+#: src/flux.c:150
 msgid "Buffer resized for this speed."
 msgstr "ბუფერის ზომა ამ სიჩქარისთვის შეიცვლება."
 
-#: src/axel.c:179
+#: src/flux.c:179
 msgid "Could not parse URL.\n"
 msgstr "URL-ის დამუშავების შეცდომა\n"
 
-#: src/axel.c:201
+#: src/flux.c:201
 #, c-format
 msgid "File '%s' already there; not retrieving.\n"
 msgstr "ფაილი '%s' უკვე გვაქვს; აღარ გადმოვიწერ.\n"
 
-#: src/axel.c:206
+#: src/flux.c:206
 #, c-format
 msgid "Incomplete download found, ignoring no-clobber option\n"
 msgstr "გადმოწერა არასრულია. პარამეტრი no-clobber გამოტოვებულია\n"
 
-#: src/axel.c:223
+#: src/flux.c:223
 #, c-format
 msgid "ERROR %d: %s.\n"
 msgstr "შეცდომა %d: %s.\n"
 
-#: src/axel.c:237
+#: src/flux.c:237
 #, c-format
 msgid "File size: %s (%jd bytes)"
 msgstr "ფაილის ზომა: %s (%jd ბაიტი)"
 
-#: src/axel.c:240
+#: src/flux.c:240
 msgid "File size: unavailable"
 msgstr "ფაილის ზომა: მიუწვდომელია"
 
-#: src/axel.c:269
+#: src/flux.c:269
 #, c-format
 msgid "Opening output file %s"
 msgstr "გამოტანის ფაილის (%s) გახსნა"
 
-#: src/axel.c:276
+#: src/flux.c:276
 msgid "Server unsupported, starting from scratch with one connection."
 msgstr "სერვერი მხარდაჭერილი არაა. ვიწყებ ნულიდან, ერთი მიერთებით."
 
-#: src/axel.c:293
+#: src/flux.c:293
 #, c-format
 msgid "%s.st: Error, truncated state file\n"
 msgstr "%s.st: შეცდომა. მდგომარეობის ფაილი არასრულია\n"
 
-#: src/axel.c:301
+#: src/flux.c:301
 #, c-format
 msgid "Bogus number of connections stored in state file\n"
 msgstr "მდგომარეობის ფაილში დამახსოვრებული მიერთებების რაოდენობა ბუნდოვანია\n"
 
-#: src/axel.c:313
+#: src/flux.c:313
 #, c-format
 msgid "State file has old format.\n"
 msgstr "მდგომარეობის ფაილის ძველი ფორმატი.\n"
 
-#: src/axel.c:346
+#: src/flux.c:346
 #, c-format
 msgid "State file found: %jd bytes downloaded, %jd to go."
 msgstr ""
 "აღმოჩენილია მდგომარეობის ფაილი: %jd ბაიტი გადმოწერილია, %jd კი დარჩენილი."
 
-#: src/axel.c:352 src/axel.c:363
+#: src/flux.c:352 src/flux.c:363
 msgid "Error opening local file"
 msgstr "შეცდომა ლოკალური ფაილის გახსნისას"
 
-#: src/axel.c:376
+#: src/flux.c:376
 msgid "Crappy filesystem/OS.. Working around. :-("
 msgstr "საზიზღარი ფაილური სისტემა/ოს-ი. ვეცდები, რამე ვქნა. :-("
 
-#: src/axel.c:389
+#: src/flux.c:389
 msgid "Error creating local file"
 msgstr "ლოკალური ფაილის გახსნის შეცდომა"
 
-#: src/axel.c:430
+#: src/flux.c:430
 #, c-format
 msgid ""
 "\n"
@@ -95,59 +95,59 @@ msgstr ""
 "\n"
 "კავშირის თავიდან აქტივაცია: %d\n"
 
-#: src/axel.c:459
+#: src/flux.c:459
 msgid "Starting download"
 msgstr "გადმოწერის დასაწყისი"
 
-#: src/axel.c:469 src/axel.c:652
+#: src/flux.c:469 src/flux.c:652
 #, c-format
 msgid "Connection %i downloading from %s:%i using interface %s"
 msgstr "მიერთება %i ვიწერ %s:%i-დან %s ინტერფეისის გამოყენებით"
 
-#: src/axel.c:479 src/axel.c:664
+#: src/flux.c:479 src/flux.c:664
 msgid "pthread error!!!"
 msgstr "pthread-ის შეცდომა!!!"
 
-#: src/axel.c:525
+#: src/flux.c:525
 #, c-format
 msgid "Error while waiting for connection: %s"
 msgstr "შეცდომა კავშირის მოლოდინისას: %s"
 
-#: src/axel.c:557
+#: src/flux.c:557
 #, c-format
 msgid "Connection %i timed out"
 msgstr "%i: შეერთების მოლოდინის ვადა ამოიწურა"
 
-#: src/axel.c:570
+#: src/flux.c:570
 #, c-format
 msgid "Error on connection %i! Connection closed"
 msgstr "შეცდომა მიერთებაზე %i! კავშირი დახურულია"
 
-#: src/axel.c:584
+#: src/flux.c:584
 #, c-format
 msgid "Connection %i unexpectedly closed"
 msgstr "მიერთება %i მოულოდნელად დაიხურა"
 
-#: src/axel.c:588 src/axel.c:604
+#: src/flux.c:588 src/flux.c:604
 #, c-format
 msgid "Connection %i finished"
 msgstr "მიერთება %i დასრულდა"
 
-#: src/axel.c:614
+#: src/flux.c:614
 msgid "Write error!"
 msgstr "ჩაწერის შეცდომა!"
 
-#: src/axel.c:716
+#: src/flux.c:716
 #, c-format
 msgid "Error while enforcing throttling: %s"
 msgstr "შეცდომა ნაძალადევი შეზღუდვისას: %s"
 
-#: src/axel.c:901
+#: src/flux.c:903
 #, c-format
 msgid "Too few bytes remaining, forcing a single connection\n"
 msgstr "ძალიან ცოტაღა დარჩა. ერთ მიერთებას ვიტოვებ\n"
 
-#: src/axel.c:920
+#: src/flux.c:922
 #, c-format
 msgid "Downloading %jd-%jd using conn. %i\n"
 msgstr "ვიწერ: %jd-%jd მიერთებებით %i\n"
@@ -177,7 +177,7 @@ msgstr "მოთხოვნილია მეტისმეტად ბე�
 msgid "Error in %s line %i.\n"
 msgstr "შეცდომა %s-ში, ხაზზე %i.\n"
 
-#: src/conf.c:303
+#: src/conf.c:308 src/conf.c:318
 #, c-format
 msgid "HOME env variable too long\n"
 msgstr "გარემოს ცვლადის HOME მნიშვნელობა მეტისმეტად გრძელია\n"
@@ -246,7 +246,7 @@ msgstr "პროქსის არასწორი სტრიქონი:
 msgid "Connection gone while writing.\n"
 msgstr "მიერთება მასში ჩაწერისას გაქრა.\n"
 
-#: src/text.c:151
+#: src/text.c:158
 #, c-format
 msgid ""
 "Too many custom headers (-H)! Currently only %u custom headers can be "
@@ -255,73 +255,99 @@ msgstr ""
 "ხელით მითითებული თავსართების (-H) რაოდენობა ძალიან დიდია! ამჟამად მხოლოდ %u "
 "თავსართი შეგიძლიათ დაუმატოთ.\n"
 
-#: src/text.c:227
+#: src/text.c:234
 #, c-format
 msgid "Can't redirect stdout to /dev/null.\n"
 msgstr "შეცდომა stdout-ის /dev/null-ზე გადამისამართებისას.\n"
 
-#: src/text.c:269
+#: src/text.c:278
 #, c-format
 msgid "Error when trying to read URL (Too long?).\n"
 msgstr "შეცდომა URL-ის წაკითხვისას (მეტისმეტად გრძელია?).\n"
 
-#: src/text.c:277
+#: src/text.c:288
 #, c-format
 msgid "Can't handle URLs of length over %zu\n"
 msgstr "%zu-ზე გრძელი URL-ების დამუშავება შეუძლებელია\n"
 
-#: src/text.c:284
-#, c-format
-msgid "Initializing download: %s\n"
-msgstr "გადმოწერის ინიციალიზაცია: %s\n"
-
-#: src/text.c:293
+#: src/text.c:303
 #, c-format
 msgid "Doing search...\n"
 msgstr "ვეძებ...\n"
 
-#: src/text.c:296
+#: src/text.c:306
 #, c-format
 msgid "File not found\n"
 msgstr "ფაილი ვერ ვიპოვე\n"
 
-#: src/text.c:300
+#: src/text.c:311
 #, c-format
 msgid "Testing speeds, this can take a while...\n"
 msgstr "სიჩქარის ტესტირება. ამას საკმაო დრო შეიძლება დასჭირდეს...\n"
 
-#: src/text.c:303
+#: src/text.c:314
 #, c-format
 msgid "Speed testing failed\n"
 msgstr "სიჩქარის ტესტირების შეცდომა\n"
 
-#: src/text.c:309
+#: src/text.c:322
 #, c-format
 msgid "%i usable servers found, will use these URLs:\n"
 msgstr "ნაპოვნია %i სასარგებლო სერვერი. გამოვიყენებ შემდეგ URL-ებს:\n"
 
-#: src/text.c:312
+#: src/text.c:325
 msgid "Speed"
 msgstr "სიჩქარე"
 
-#: src/text.c:356
+#: src/text.c:339
+#, c-format
+msgid "Invalid URL pattern, or too many URLs (max %d).\n"
+msgstr ""
+
+#: src/text.c:348
+#, c-format
+msgid ""
+"Refusing to write %zu downloads to a single file '%s'; use a directory or #N "
+"in --output.\n"
+msgstr ""
+
+#: src/text.c:359
+#, c-format
+msgid ""
+"\n"
+"=== %zu/%zu: %s ===\n"
+msgstr ""
+
+#: src/text.c:378
+#, c-format
+msgid ""
+"\n"
+"%zu of %zu downloads completed.\n"
+msgstr ""
+
+#: src/text.c:423
+#, c-format
+msgid "Initializing download: %s\n"
+msgstr "გადმოწერის ინიციალიზაცია: %s\n"
+
+#: src/text.c:446
 #, c-format
 msgid "Filename too long!\n"
 msgstr "ფაილის სახელი ძალიან გრძელია!\n"
 
-#: src/text.c:369
+#: src/text.c:459
 #, c-format
 msgid "No state file, cannot resume!\n"
 msgstr "მდგომარეობის ფაილი არ არსებობს. გაგრძელება შეუძლებელია!\n"
 
-#: src/text.c:373
+#: src/text.c:463
 #, c-format
 msgid "State file found, but no downloaded data. Starting from scratch.\n"
 msgstr ""
 "აღმოჩენილია მდგომარეობის ფაილი, მაგრამ არა გადმოწერილი მონაცემები. ვიწყებ "
 "ნულიდან.\n"
 
-#: src/text.c:461
+#: src/text.c:551
 #, c-format
 msgid ""
 "\n"
@@ -330,51 +356,51 @@ msgstr ""
 "\n"
 "გადმოწერილია %s %s-ში. (%.2f კბ/წმ)\n"
 
-#: src/text.c:498
+#: src/text.c:660
 msgid "Kilo"
 msgstr "კილო"
 
-#: src/text.c:498
+#: src/text.c:660
 msgid "Mega"
 msgstr "მეგა"
 
-#: src/text.c:498
+#: src/text.c:660
 msgid "Giga"
 msgstr "გიგა"
 
-#: src/text.c:498
+#: src/text.c:660
 msgid "Tera"
 msgstr "ტერა"
 
-#: src/text.c:504
+#: src/text.c:666
 #, c-format
 msgid "%g %sbyte(s)"
 msgstr "%g %sბაიტი"
 
-#: src/text.c:520
+#: src/text.c:682
 #, c-format
 msgid "%i:%02i:%02i hour(s)"
 msgstr "%i:%02i:%02i საათი"
 
-#: src/text.c:522
+#: src/text.c:684
 #, c-format
 msgid "%i:%02i minute(s)"
 msgstr "%i:%02i წუთი"
 
-#: src/text.c:524
+#: src/text.c:686
 #, c-format
 msgid "%i second(s)"
 msgstr "%i წამი"
 
-#: src/text.c:626
+#: src/text.c:788
 #, c-format
 msgid "Can't setup alternate output. Deactivating.\n"
 msgstr "გამოტანის შეცვლის შეცდომა. დეაქტივაცია.\n"
 
-#: src/text.c:689
-#, c-format
+#: src/text.c:851
+#, fuzzy, c-format
 msgid ""
-"Usage: axel [options] url1 [url2] [url...]\n"
+"Usage: flux [options] url1 [url2] [url...]\n"
 "\n"
 "-s x\tSpecify maximum speed (bytes per second)\n"
 "-n x\tSpecify maximum number of connections\n"
@@ -395,7 +421,7 @@ msgid ""
 "-T x\tSet I/O and connection timeout\n"
 "-V\tVersion information\n"
 "\n"
-"Visit https://github.com/axel-download-accelerator/axel/issues\n"
+"Visit https://github.com/flux-download-accelerator/flux/issues\n"
 msgstr ""
 "გამოყენება: axel [პარამეტრები] url1 [url2] [url...]\n"
 "\n"
@@ -420,10 +446,10 @@ msgstr ""
 "\n"
 "გვეწვიეთ https://github.com/axel-download-accelerator/axel/issues\n"
 
-#: src/text.c:712
-#, c-format
+#: src/text.c:874
+#, fuzzy, c-format
 msgid ""
-"Usage: axel [options] url1 [url2] [url...]\n"
+"Usage: flux [options] url1 [url2] [url...]\n"
 "\n"
 "--max-speed=x\t\t-s x\tSpecify maximum speed (bytes per second)\n"
 "--num-connections=x\t-n x\tSpecify maximum number of connections\n"
@@ -446,7 +472,7 @@ msgid ""
 "--timeout=x\t\t-T x\tSet I/O and connection timeout\n"
 "--version\t\t-V\tVersion information\n"
 "\n"
-"Visit https://github.com/axel-download-accelerator/axel/issues to report "
+"Visit https://github.com/flux-download-accelerator/flux/issues to report "
 "bugs\n"
 msgstr ""
 "გამოყენება: axel [პარამეტრები] url1 [url2] [url...]\n"
@@ -475,16 +501,16 @@ msgstr ""
 "შეცდომების შესახებ მოგვწერეთ ბმულზე https://github.com/axel-download-"
 "accelerator/axel/issues\n"
 
-#: src/text.c:741
-#, c-format
-msgid "Axel %s (%s)\n"
+#: src/text.c:903
+#, fuzzy, c-format
+msgid "Hyperflux %s (%s)\n"
 msgstr "Axel %s (%s)\n"
 
-#: src/text.c:755
+#: src/text.c:917
 msgid "and others."
 msgstr "და სხვები."
 
-#: src/text.c:756
+#: src/text.c:918
 msgid ""
 "Please, see the CREDITS file.\n"
 "\n"

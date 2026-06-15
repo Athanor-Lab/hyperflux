@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2001-2007 Wilmer van der Gaast
   Copyright 2010      Mark Smith
@@ -50,7 +50,7 @@
 #include <netdb.h>
 #include <sys/ioctl.h>
 #include <netinet/tcp.h>
-#include "axel.h"
+#include "flux.h"
 
 #ifndef TCP_FASTOPEN_CONNECT
 #ifdef __linux__

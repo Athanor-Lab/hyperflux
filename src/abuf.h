@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2020  Ismael Luceno
 
@@ -34,8 +34,8 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#ifndef AXEL_ABUF_H
-#define AXEL_ABUF_H
+#ifndef FLUX_ABUF_H
+#define FLUX_ABUF_H
 
 typedef struct {
 	char *p;
@@ -48,4 +48,4 @@ int abuf_strcat(abuf_t *abuf, const char *src);
 
 #define ABUF_FREE 0
 
-#endif /* AXEL_ABUF_H */
+#endif /* FLUX_ABUF_H */

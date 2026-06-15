@@ -1,35 +1,25 @@
-## HOW TO CONTRIBUTE TO AXEL DEVELOPMENT
+## HOW TO CONTRIBUTE TO HYPERFLUX DEVELOPMENT
 
-Axel is available at https://github.com/axel-download-accelerator/axel
+Hyperflux is a fork of Axel. Hyperflux is available at
+<https://example.invalid/hyperflux>.
 
-If you are interested in contribute to axel development, please, follow
+If you are interested in contributing to Hyperflux development, please follow
 these steps:
 
-1. Send a patch that fix an issue or that implement a new feature.
+1. Send a patch that fixes an issue or that implements a new feature.
    Alternatively, you can do a 'pull request'[1] in GitHub.
 
 [1]: https://help.github.com/articles/using-pull-requests
 
-2. Ask for join to the Axel project in GitHub, if you want to work
-   officially. Note that this second step is not compulsory. However,
-   to accept you in project, is needed a minimum previous collaboration.
+2. Ask to join the Hyperflux project, if you want to work officially. Note
+   that this second step is not compulsory. However, to accept you in the
+   project, a minimum of previous collaboration is needed.
 
 
-To find issues and bugs to fix, you can check these addresses:
-
-   - https://github.com/axel-download-accelerator/axel/issues
-   - https://bugs.debian.org/cgi-bin/pkgreport.cgi?dist=unstable;package=axel
-   - https://bugs.launchpad.net/ubuntu/+source/axel/+bugs
-   - https://apps.fedoraproject.org/packages/axel/bugs
-   - https://bugs.archlinux.org/?project=5&cat[]=33&string=axel
-   - https://bugs.gentoo.org/buglist.cgi?quicksearch=net-misc%2Faxel
+To find issues and bugs to fix, check the project page at
+<https://example.invalid/hyperflux>.
 
 If you want to join, please make a contact.
-
-There is a group here[2] to discuss and to coordinate the development.
-You can also find other developers in the #axel channel on freenode.
-
-[2]: https://groups.google.com/forum/#!forum/axel-accelerator-dev
 
   -- Eriberto, Sun, 20 Mar 2016 16:27:53 -0300,
      updated on Sun, 08 Sep 2017 23:27:00 -0300.
@@ -37,7 +27,7 @@ You can also find other developers in the #axel channel on freenode.
 ## Submitting Changes
 
 ### Coding style
-As of version 2.15, Axel adopted a new coding style, very similar to that of the
+As of version 2.15, Hyperflux adopted a new coding style, very similar to that of the
 Linux Kernel, with the additional requirement to insert a newline after the
 return type of procedure declarations.
 
@@ -64,7 +54,7 @@ the sumbission must sign-off the commit, meaning that they abide by the
 aforementioned rules.
 
 ### Licensing
-Axel is provided under the terms of the GNU General Public License version 2 or
+Hyperflux is provided under the terms of the GNU General Public License version 2 or
 (at your option) any later version, as described in the COPYING file, plus an
 exception for linking against OpenSSL 1.x.
 

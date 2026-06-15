@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2018      Ismael Luceno
 
@@ -36,7 +36,7 @@
 
 /* Android compatibility stubs */
 
-#if !defined(AXEL_COMPAT_ANDROID) && defined(__ANDROID__)
+#if !defined(FLUX_COMPAT_ANDROID) && defined(__ANDROID__)
 
 inline static
 int pthread_cancel(pthread_t h) {
@@ -62,4 +62,4 @@ enum {
 	PTHREAD_CANCEL_ASYNCHRONOUS,
 };
 
-#endif /* !defined(AXEL_COMPAT_ANDROID) && defined(__ANDROID__) */
+#endif /* !defined(FLUX_COMPAT_ANDROID) && defined(__ANDROID__) */

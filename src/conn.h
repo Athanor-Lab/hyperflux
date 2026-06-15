@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2001-2007 Wilmer van der Gaast
   Copyright 2008      Y Giridhar Appaji Nag
@@ -41,8 +41,8 @@
 
 /* Connection stuff */
 
-#ifndef AXEL_CONN_H
-#define AXEL_CONN_H
+#ifndef FLUX_CONN_H
+#define FLUX_CONN_H
 
 #define PROTO_SECURE_MASK	(1<<0)	/* bit 0 - 0 = insecure, 1 = secure */
 #define PROTO_PROTO_MASK	(1<<1)	/* bit 1 = 0 = ftp,      1 = http   */
@@ -119,4 +119,4 @@ int conn_info(conn_t *conn);
 int conn_info_status_get(char *msg, size_t size, conn_t *conn);
 const char *scheme_from_proto(int proto);
 
-#endif				/* AXEL_CONN_H */
+#endif				/* FLUX_CONN_H */

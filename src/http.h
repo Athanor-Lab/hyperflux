@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2001-2007 Wilmer van der Gaast
   Copyright 2008      Y Giridhar Appaji Nag
@@ -42,8 +42,8 @@
 
 /* HTTP control include file */
 
-#ifndef AXEL_HTTP_H
-#define AXEL_HTTP_H
+#ifndef FLUX_HTTP_H
+#define FLUX_HTTP_H
 
 typedef struct {
 	char host[MAX_STRING];
@@ -75,4 +75,4 @@ off_t http_size(http_t *conn);
 off_t http_size_from_range(http_t *conn);
 void http_decode(char *s);
 
-#endif				/* AXEL_HTTP_H */
+#endif				/* FLUX_HTTP_H */

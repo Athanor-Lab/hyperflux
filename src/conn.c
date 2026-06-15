@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2001-2007 Wilmer van der Gaast
   Copyright 2007-2008 Y Giridhar Appaji Nag
@@ -46,7 +46,7 @@
 /* Connection stuff */
 
 #include "config.h"
-#include "axel.h"
+#include "flux.h"
 #include "hash.h"
 
 /**
@@ -129,7 +129,7 @@ conn_set(conn_t *conn, const char *set_url)
 			/* Dash the password: Save traffic by trying
 			   to avoid multi-line responses */
 			strcpy(conn->user, "anonymous");
-			strcpy(conn->pass, "mailto:axel@axel.project");
+			strcpy(conn->pass, "mailto:flux@flux.project");
 		} else {
 			*conn->user = *conn->pass = 0;
 		}
@@ -388,7 +388,7 @@ urlseq_init(unsigned int urlcount)
 {
 	struct urlseq *u;
 	u = malloc(sizeof(*u) + sizeof(u->visited_urls[0]) * urlcount);
-	if (!u || axel_rand64(u->secret) < (ssize_t)sizeof(u->secret[0]))
+	if (!u || flux_rand64(u->secret) < (ssize_t)sizeof(u->secret[0]))
 		return urlseq_teardown(&u);
 	u->num_urls = 0;
 	return u;
@@ -405,7 +405,7 @@ urlseq_check_loop(struct urlseq *u, conn_t *conn)
 	if (url_len <= 0)
 		return 0;
 
-	uint32_t url_hash = axel_hash32(u->buf, url_len, u->secret);
+	uint32_t url_hash = flux_hash32(u->buf, url_len, u->secret);
 	for (int j = 0; j < u->num_urls; j++) {
 		if (u->visited_urls[j] == url_hash)
 			return 1;

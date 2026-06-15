@@ -1,4 +1,4 @@
-/* Axel -- A lighter download accelerator for Linux and other Unices
+/* Hyperflux -- A lighter download accelerator for Linux and other Unices
  *
  * SipHash-2-4-32 hashing function
  *
@@ -80,7 +80,7 @@ FORCE_INLINE static void SIPROUND(uint32_t v[4]);
  * Computes a SipHash-like value.
  */
 uint32_t
-axel_hash32(const void *src, size_t len, const uint64_t *kk)
+flux_hash32(const void *src, size_t len, const uint64_t *kk)
 {
 	const uint8_t *ni = src;
 

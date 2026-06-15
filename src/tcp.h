@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2001-2007 Wilmer van der Gaast
   Copyright 2016      Stephen Thirlwall
@@ -40,8 +40,8 @@
 
 /* TCP control include file */
 
-#ifndef AXEL_TCP_H
-#define AXEL_TCP_H
+#ifndef FLUX_TCP_H
+#define FLUX_TCP_H
 
 #ifdef HAVE_SSL
 #ifdef HAVE_WOLFSSL
@@ -71,4 +71,4 @@ ssize_t tcp_write(tcp_t *tcp, void *buffer, int size);
 
 int get_if_ip(char *dst, size_t len, const char *iface);
 
-#endif				/* AXEL_TCP_H */
+#endif				/* FLUX_TCP_H */

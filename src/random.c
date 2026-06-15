@@ -1,11 +1,11 @@
 #include <unistd.h>
 #include "config.h"
-#include "axel.h"
+#include "flux.h"
 
 static int rnd_fd = -1;
 
 int
-axel_rnd_init(void)
+flux_rnd_init(void)
 {
 	const char rnd_dev[] = "/dev/random";
 	rnd_fd = open(rnd_dev, O_RDONLY);
@@ -15,7 +15,7 @@ axel_rnd_init(void)
 }
 
 ssize_t
-axel_rand64(uint64_t *out)
+flux_rand64(uint64_t *out)
 {
 	return read(rnd_fd, out, sizeof(*out));
 }

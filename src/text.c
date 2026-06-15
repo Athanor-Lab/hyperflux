@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2001-2007 Wilmer van der Gaast
   Copyright 2008      Y Giridhar Appaji Nag
@@ -49,18 +49,25 @@
 
 #include "config.h"
 #include <sys/ioctl.h>
-#include "axel.h"
+#include "flux.h"
+#include "url_glob.h"
 
 
 static void stop(int signal);
 static char *time_human(char *dst, size_t len, unsigned int value);
 static void print_commas(off_t bytes_done);
-static void print_alternate_output(axel_t *axel);
+static void print_alternate_output(flux_t *flux);
 static void print_progress(off_t cur, off_t prev, off_t total, double kbps);
 static void print_help(void);
 static void print_version(void);
 static void print_version_info(void);
 static int get_term_width(void);
+static int download_one(conf_t *conf, const search_t *urls, int count,
+			const char *out_name);
+static int is_directory(const char *p);
+static int has_numbered_ref(const char *tpl, size_t ncaps);
+static void resolve_outname(char *dst, size_t dlen, const char *tpl,
+			    const url_glob_t *it, size_t ncaps);
 
 int run = 1;
 
@@ -69,7 +76,7 @@ int run = 1;
 #ifdef NOGETOPTLONG
 #define getopt_long(a, b, c, d, e) getopt(a, b, c)
 #else
-static struct option axel_options[] = {
+static struct option flux_options[] = {
 	/* name             has_arg flag  val */
 	{"max-speed",       1,      NULL, 's'},
 	{"num-connections", 1,      NULL, 'n'},
@@ -111,9 +118,9 @@ main(int argc, char *argv[])
 	int do_search = 0;
 	search_t *search;
 	conf_t conf[1];
-	axel_t *axel;
 	int j, ret = 1;
-	char *s;
+	char *stdin_url = NULL;
+	const char *single = NULL;
 
 	fn[0] = 0;
 
@@ -123,7 +130,7 @@ main(int argc, char *argv[])
 	bindtextdomain(PACKAGE, LOCALEDIR);
 	textdomain(PACKAGE);
 #endif
-	if (axel_rnd_init() == -1)
+	if (flux_rnd_init() == -1)
 		return 1;
 
 	if (!conf_init(conf)) {
@@ -136,7 +143,7 @@ main(int argc, char *argv[])
 	while (1) {
 		int option = getopt_long(argc, argv,
 					 "s:n:o:S::46NqvhVapkcH:U:T:",
-					 axel_options, NULL);
+					 flux_options, NULL);
 		if (option == -1)
 			break;
 
@@ -191,10 +198,10 @@ main(int argc, char *argv[])
 			conf->ai_family = AF_INET;
 			break;
 		case 'a':
-			conf->progress_style = AXEL_PROGRESS_STYLE_ALTERNATIVE;
+			conf->progress_style = FLUX_PROGRESS_STYLE_ALTERNATIVE;
 			break;
 		case 'p':
-			conf->progress_style = AXEL_PROGRESS_STYLE_PERCENTAGE;
+			conf->progress_style = FLUX_PROGRESS_STYLE_PERCENTAGE;
 			break;
 		case 'k':
 			conf->insecure = 1;
@@ -239,7 +246,7 @@ main(int argc, char *argv[])
 
 	/* disable alternate outputs and verbosity when quiet is specified */
 	if (conf->verbose < 0) {
-		conf->progress_style = AXEL_PROGRESS_STYLE_CLASSIC;
+		conf->progress_style = FLUX_PROGRESS_STYLE_CLASSIC;
 	} else if (j > -1)
 		conf->verbose = j;
 
@@ -259,20 +266,24 @@ main(int argc, char *argv[])
 	if (argc - optind == 0) {
 		print_help();
 		goto free_conf;
-	} else if (strcmp(argv[optind], "-") == 0) {
-		s = malloc(MAX_STRING);
-		if (!s)
+	}
+
+	if (strcmp(argv[optind], "-") == 0) {
+		stdin_url = malloc(MAX_STRING);
+		if (!stdin_url)
 			goto free_conf;
 
-		if (scanf("%1024[^\n]s", s) != 1) {
+		if (scanf("%1023[^\n]", stdin_url) != 1) {
 			fprintf(stderr,
 				_("Error when trying to read URL (Too long?).\n"));
-			free(s);
+			free(stdin_url);
+			stdin_url = NULL;
 			goto free_conf;
 		}
-	} else {
-		s = argv[optind];
-		if (strlen(s) > MAX_STRING) {
+		single = stdin_url;
+	} else if (argc - optind == 1) {
+		single = argv[optind];
+		if (strlen(single) >= MAX_STRING) {
 			fprintf(stderr,
 				_("Can't handle URLs of length over %zu\n"),
 				MAX_STRING);
@@ -280,28 +291,30 @@ main(int argc, char *argv[])
 		}
 	}
 
-	if (conf->progress_style != AXEL_PROGRESS_STYLE_PERCENTAGE)
-		printf(_("Initializing download: %s\n"), s);
-
 	if (do_search) {
+		const char *url = single ? single : argv[optind];
+
 		search = calloc(conf->search_amount + 1, sizeof(search_t));
 		if (!search)
-			goto free_conf;
+			goto cleanup;
 
 		search[0].conf = conf;
 		if (conf->verbose)
 			printf(_("Doing search...\n"));
-		int i = search_makelist(search, s);
+		int i = search_makelist(search, (char *)url);
 		if (i < 0) {
 			fprintf(stderr, _("File not found\n"));
-			goto free_conf;
+			free(search);
+			goto cleanup;
 		}
 		if (conf->verbose)
 			printf(_("Testing speeds, this can take a while...\n"));
 		j = search_getspeeds(search, i);
 		if (j < 0) {
 			fprintf(stderr, _("Speed testing failed\n"));
-			return 1;
+			free(search);
+			ret = 1;
+			goto cleanup;
 		}
 
 		search_sortlist(search, i);
@@ -315,160 +328,309 @@ main(int argc, char *argv[])
 				       search[i].speed);
 			printf("\n");
 		}
-		axel = axel_new(conf, j, search);
+		ret = download_one(conf, search, j, fn);
 		free(search);
-		if (!axel || axel->ready == -1) {
-			print_messages(axel);
-			goto close_axel;
+	} else if (single != NULL) {
+		url_glob_t *items = NULL;
+		size_t n = 0, ncaps = 0;
+
+		if (url_glob(single, MAX_STRING, &items, &n, &ncaps) < 0) {
+			fprintf(stderr,
+				_("Invalid URL pattern, or too many URLs (max %d).\n"),
+				URL_GLOB_MAX_URLS);
+			goto cleanup;
 		}
+
+		/* Refuse to clobber one file with many distinct downloads */
+		if (n > 1 && *fn && !is_directory(fn)
+		    && !has_numbered_ref(fn, ncaps)) {
+			fprintf(stderr,
+				_("Refusing to write %zu downloads to a single file '%s'; use a directory or #N in --output.\n"),
+				n, fn);
+			url_glob_free(items, n, ncaps);
+			ret = 1;
+			goto cleanup;
+		}
+
+		int failures = 0;
+		size_t done = 0;
+		for (size_t k = 0; k < n && run; k++) {
+			if (n > 1)
+				printf(_("\n=== %zu/%zu: %s ===\n"),
+				       (size_t)(k + 1), n, items[k].url);
+
+			search_t one;
+			memset(&one, 0, sizeof(one));
+			strlcpy(one.url, items[k].url, sizeof(one.url));
+
+			char outname[MAX_STRING];
+			resolve_outname(outname, sizeof(outname), fn,
+					&items[k], ncaps);
+
+			int r = download_one(conf, &one, 1, outname);
+			if (r == 0)
+				done++;
+			else
+				failures++;
+		}
+		url_glob_free(items, n, ncaps);
+		if (n > 1)
+			printf(_("\n%zu of %zu downloads completed.\n"),
+			       done, n);
+		/* Mirror Hyperflux's exit codes: 2 on interrupt, 1 on any failure. */
+		if (!run)
+			ret = 2;
+		else
+			ret = failures ? 1 : 0;
 	} else {
+		/* Multiple distinct URLs: legacy mirror mode */
 		search = calloc(argc - optind, sizeof(search_t));
 		if (!search)
-			goto free_conf;
+			goto cleanup;
 
 		for (int i = 0; i < argc - optind; i++) {
 			strlcpy(search[i].url, argv[optind + i],
 				sizeof(search[i].url));
 			// FIXME check url here
 		}
-		axel = axel_new(conf, argc - optind, search);
+		ret = download_one(conf, search, argc - optind, fn);
 		free(search);
-		if (!axel || axel->ready == -1) {
-			print_messages(axel);
-			goto close_axel;
-		}
 	}
-	print_messages(axel);
-	if (s != argv[optind]) {
-		free(s);
+
+ cleanup:
+	free(stdin_url);
+ free_conf:
+	conf_free(conf);
+
+	return ret;
+}
+
+/* Run a single download (one file, possibly multi-connection / multi-mirror).
+ * urls[0].url is the displayed URL; out_name is a filename template (may be
+ * empty, a directory, or contain #N references already resolved by the caller).
+ * Returns 0 if completed, 2 if interrupted/incomplete, 1 on setup error. */
+static int
+download_one(conf_t *conf, const search_t *urls, int count, const char *out_name)
+{
+	flux_t *flux;
+	int ret = 1;
+	char *s;
+	/* flux_new/flux_divide rotate the shared interfaces list; restore the
+	 * head on return so conf_free releases the original node. */
+	flux_if_t *saved_if = conf->interfaces;
+
+	if (conf->progress_style != FLUX_PROGRESS_STYLE_PERCENTAGE)
+		printf(_("Initializing download: %s\n"), urls[0].url);
+
+	flux = flux_new(conf, count, urls);
+	if (!flux || flux->ready == -1) {
+		print_messages(flux);
+		goto close_flux;
 	}
+	print_messages(flux);
+
+	/* Work on a local copy: callers reuse the template across downloads */
+	char buf[MAX_STRING];
+	strlcpy(buf, out_name, sizeof(buf));
 
 	/* Check if a file name has been specified */
-	if (*fn) {
-		struct stat buf;
+	if (*buf) {
+		struct stat sbuf;
 
-		if (stat(fn, &buf) == 0) {
-			if (S_ISDIR(buf.st_mode)) {
-				size_t fnlen = strlen(fn);
-				size_t axelfnlen = strlen(axel->filename);
+		if (stat(buf, &sbuf) == 0) {
+			if (S_ISDIR(sbuf.st_mode)) {
+				size_t fnlen = strlen(buf);
+				size_t fluxfnlen = strlen(flux->filename);
 
-				if (fnlen + 1 + axelfnlen + 1 > MAX_STRING) {
+				if (fnlen + 1 + fluxfnlen + 1 > MAX_STRING) {
 					fprintf(stderr, _("Filename too long!\n"));
-					goto close_axel;
+					goto close_flux;
 				}
 
-				fn[fnlen] = '/';
-				memcpy(fn + fnlen + 1, axel->filename,
-				       axelfnlen);
-				fn[fnlen + 1 + axelfnlen] = '\0';
+				buf[fnlen] = '/';
+				memcpy(buf + fnlen + 1, flux->filename,
+				       fluxfnlen);
+				buf[fnlen + 1 + fluxfnlen] = '\0';
 			}
 		}
 		char statefn[MAX_STRING + 3];
-		snprintf(statefn, sizeof(statefn), "%s.st", fn);
-		if (access(fn, F_OK) == 0 && access(statefn, F_OK) != 0) {
+		snprintf(statefn, sizeof(statefn), "%s.st", buf);
+		if (access(buf, F_OK) == 0 && access(statefn, F_OK) != 0) {
 			fprintf(stderr, _("No state file, cannot resume!\n"));
-			goto close_axel;
+			goto close_flux;
 		}
-		if (access(statefn, F_OK) == 0 && access(fn, F_OK) != 0) {
+		if (access(statefn, F_OK) == 0 && access(buf, F_OK) != 0) {
 			printf(_("State file found, but no downloaded data. Starting from scratch.\n"));
 			unlink(statefn);
 		}
-		strlcpy(axel->filename, fn, sizeof(axel->filename));
+		strlcpy(flux->filename, buf, sizeof(flux->filename));
 	} else {
 		/* Local file existence check */
-		s = axel->filename + strlen(axel->filename);
+		s = flux->filename + strlen(flux->filename);
 		for (int i = 0; 1; i++) {
 			char statefn[MAX_STRING + 3];
 			snprintf(statefn, sizeof(statefn), "%s.st",
-				 axel->filename);
+				 flux->filename);
 
-			int f_exists = !access(axel->filename, F_OK);
+			int f_exists = !access(flux->filename, F_OK);
 			int st_exists = !access(statefn, F_OK);
 			if (f_exists) {
-				if (axel->conn[0].supported && st_exists)
+				if (flux->conn[0].supported && st_exists)
 						break;
 			} else if (!st_exists)
 				break;
-			snprintf(s, axel->filename + sizeof(axel->filename) - s,
+			snprintf(s, flux->filename + sizeof(flux->filename) - s,
 				 ".%i", i);
 		}
 	}
 
-	if (!axel_open(axel)) {
-		print_messages(axel);
-		goto close_axel;
+	if (!flux_open(flux)) {
+		print_messages(flux);
+		goto close_flux;
 	}
-	print_messages(axel);
-	axel_start(axel);
-	print_messages(axel);
+	print_messages(flux);
+	flux_start(flux);
+	print_messages(flux);
 
-	if (conf->progress_style == AXEL_PROGRESS_STYLE_ALTERNATIVE
-	    || conf->progress_style == AXEL_PROGRESS_STYLE_PERCENTAGE) {
+	if (conf->progress_style == FLUX_PROGRESS_STYLE_ALTERNATIVE
+	    || conf->progress_style == FLUX_PROGRESS_STYLE_PERCENTAGE) {
 		putchar('\n');
-	} else if (axel->bytes_done > 0) {	/* Print first dots if resuming */
+	} else if (flux->bytes_done > 0) {	/* Print first dots if resuming */
 		putchar('\n');
-		print_commas(axel->bytes_done);
+		print_commas(flux->bytes_done);
 		fflush(stdout);
 
 	}
-	axel->start_byte = axel->bytes_done;
+	flux->start_byte = flux->bytes_done;
 
 	/* Install save_state signal handler for resuming support */
 	signal(SIGINT, stop);
 	signal(SIGTERM, stop);
 
-	while (!axel->ready && run) {
+	while (!flux->ready && run) {
 		off_t prev;
 
-		prev = axel->bytes_done;
-		axel_do(axel);
+		prev = flux->bytes_done;
+		flux_do(flux);
 
-		if (conf->progress_style == AXEL_PROGRESS_STYLE_PERCENTAGE) {
-			if (!axel->message && prev != axel->bytes_done)
-				printf("%u\n", calc_percentage(axel->bytes_done, axel->size));
-		} else 	if (conf->progress_style == AXEL_PROGRESS_STYLE_ALTERNATIVE) {
-			if (!axel->message && prev != axel->bytes_done)
-				print_alternate_output(axel);
+		if (conf->progress_style == FLUX_PROGRESS_STYLE_PERCENTAGE) {
+			if (!flux->message && prev != flux->bytes_done)
+				printf("%u\n", calc_percentage(flux->bytes_done, flux->size));
+		} else 	if (conf->progress_style == FLUX_PROGRESS_STYLE_ALTERNATIVE) {
+			if (!flux->message && prev != flux->bytes_done)
+				print_alternate_output(flux);
 		} else if (conf->verbose > -1) {
-			print_progress(axel->bytes_done, prev, axel->size,
-				       (double)axel->bytes_per_second / 1024);
+			print_progress(flux->bytes_done, prev, flux->size,
+				       (double)flux->bytes_per_second / 1024);
 		}
 
-		if (axel->message) {
-			if (conf->progress_style == AXEL_PROGRESS_STYLE_ALTERNATIVE) {
+		if (flux->message) {
+			if (conf->progress_style == FLUX_PROGRESS_STYLE_ALTERNATIVE) {
 				/* clreol-simulation */
 				fputs("\e[2K\r", stdout);
 			} else {
 				putchar('\n');
 			}
-			print_messages(axel);
-			if (!axel->ready) {
-				if (conf->progress_style != AXEL_PROGRESS_STYLE_ALTERNATIVE)
-					print_commas(axel->bytes_done);
+			print_messages(flux);
+			if (!flux->ready) {
+				if (conf->progress_style != FLUX_PROGRESS_STYLE_ALTERNATIVE)
+					print_commas(flux->bytes_done);
 				else
-					print_alternate_output(axel);
+					print_alternate_output(flux);
 			}
-		} else if (axel->ready) {
+		} else if (flux->ready) {
 			putchar('\n');
 		}
 		fflush(stdout);
 	}
 
 	char hsize[MAX_STRING / 2], htime[MAX_STRING / 2];
-	time_human(htime, sizeof(htime), axel_gettime() - axel->start_time);
-	axel_size_human(hsize, sizeof(hsize), axel->bytes_done - axel->start_byte);
+	time_human(htime, sizeof(htime), flux_gettime() - flux->start_time);
+	flux_size_human(hsize, sizeof(hsize), flux->bytes_done - flux->start_byte);
 
 	printf(_("\nDownloaded %s in %s. (%.2f KB/s)\n"), hsize, htime,
-	       (double)axel->bytes_per_second / 1024);
+	       (double)flux->bytes_per_second / 1024);
 
-	ret = axel->ready ? 0 : 2;
+	ret = flux->ready ? 0 : 2;
 
- close_axel:
-	axel_close(axel);
- free_conf:
-	conf_free(conf);
-
+ close_flux:
+	flux_close(flux);
+	conf->interfaces = saved_if;
 	return ret;
+}
+
+/* Return 1 if p exists and is a directory, 0 otherwise. */
+static int
+is_directory(const char *p)
+{
+	struct stat buf;
+
+	if (stat(p, &buf) != 0)
+		return 0;
+	return S_ISDIR(buf.st_mode) ? 1 : 0;
+}
+
+/* Return 1 if tpl contains a '#' followed by digits naming a capture in
+ * range 1..ncaps. */
+static int
+has_numbered_ref(const char *tpl, size_t ncaps)
+{
+	for (const char *p = tpl; *p; p++) {
+		if (*p != '#' || !isdigit((unsigned char)p[1]))
+			continue;
+
+		size_t idx = 0;
+		const char *q = p + 1;
+		while (isdigit((unsigned char)*q)) {
+			idx = idx * 10 + (size_t)(*q - '0');
+			if (idx > ncaps)	/* avoid overflow, already out of range */
+				break;
+			q++;
+		}
+		if (idx >= 1 && idx <= ncaps)
+			return 1;
+	}
+	return 0;
+}
+
+/* Build an output name from a template, substituting #D (D = 1..ncaps) with
+ * the matching capture. A '#' not followed by a valid in-range index is copied
+ * literally. Always NUL-terminates dst and never overflows dlen. */
+static void
+resolve_outname(char *dst, size_t dlen, const char *tpl,
+		const url_glob_t *it, size_t ncaps)
+{
+	if (!dlen)
+		return;
+
+	if (!*tpl) {
+		dst[0] = 0;
+		return;
+	}
+
+	size_t o = 0;
+	for (const char *p = tpl; *p && o + 1 < dlen;) {
+		if (*p == '#' && isdigit((unsigned char)p[1])) {
+			size_t idx = 0;
+			const char *q = p + 1;
+			while (isdigit((unsigned char)*q)) {
+				idx = idx * 10 + (size_t)(*q - '0');
+				if (idx > ncaps)
+					break;
+				q++;
+			}
+			if (idx >= 1 && idx <= ncaps && it->caps
+			    && it->caps[idx - 1]) {
+				for (const char *c = it->caps[idx - 1];
+				     *c && o + 1 < dlen; c++)
+					dst[o++] = *c;
+				p = q;
+				continue;
+			}
+		}
+		dst[o++] = *p++;
+	}
+	dst[o] = 0;
 }
 
 /* SIGINT/SIGTERM handler */
@@ -491,7 +653,7 @@ log2i(unsigned long long x)
 
 /* Convert a number of bytes to a human-readable form */
 char *
-axel_size_human(char *dst, size_t len, size_t value)
+flux_size_human(char *dst, size_t len, size_t value)
 {
 	double fval = (double)value;
 	const char * const oname[] = {
@@ -586,7 +748,7 @@ alt_id(int n)
 }
 
 static void
-print_alternate_output_progress(axel_t *axel, char *progress, int width,
+print_alternate_output_progress(flux_t *flux, char *progress, int width,
 				off_t done, off_t total,
 				double now)
 {
@@ -594,18 +756,18 @@ print_alternate_output_progress(axel_t *axel, char *progress, int width,
 		width = 1;
 	if (!total)
 		total = 1;
-	for (int i = 0; i < axel->conf->num_connections; i++) {
-		int offset = axel->conn[i].currentbyte * width / total;
+	for (int i = 0; i < flux->conf->num_connections; i++) {
+		int offset = flux->conn[i].currentbyte * width / total;
 
-		if (axel->conn[i].currentbyte < axel->conn[i].lastbyte) {
-			if (now <= axel->conn[i].last_transfer
-				   + axel->conf->connection_timeout / 2) {
+		if (flux->conn[i].currentbyte < flux->conn[i].lastbyte) {
+			if (now <= flux->conn[i].last_transfer
+				   + flux->conf->connection_timeout / 2) {
 				progress[offset] = alt_id(i);
 			} else
 				progress[offset] = '#';
 		}
 		memset(progress + offset + 1, ' ',
-		       max(0, axel->conn[i].lastbyte * width / total - offset - 1));
+		       max(0, flux->conn[i].lastbyte * width / total - offset - 1));
 	}
 
 	progress[width] = '\0';
@@ -613,18 +775,18 @@ print_alternate_output_progress(axel_t *axel, char *progress, int width,
 }
 
 static void
-print_alternate_output(axel_t *axel)
+print_alternate_output(flux_t *flux)
 {
-	off_t done = axel->bytes_done;
-	off_t total = axel->size;
-	double now = axel_gettime();
+	off_t done = flux->bytes_done;
+	off_t total = flux->size;
+	double now = flux_gettime();
 	int width = get_term_width();
 	char *progress;
 
 	if (width < 40) {
 		fprintf(stderr,
 			_("Can't setup alternate output. Deactivating.\n"));
-		axel->conf->progress_style = AXEL_PROGRESS_STYLE_CLASSIC;
+		flux->conf->progress_style = FLUX_PROGRESS_STYLE_CLASSIC;
 
 		return;
 	}
@@ -637,24 +799,24 @@ print_alternate_output(axel_t *axel)
 	memset(progress, '.', width);
 
 	if (total != LLONG_MAX) {
-		print_alternate_output_progress(axel, progress, width, done,
+		print_alternate_output_progress(flux, progress, width, done,
 						total, now);
 	} else {
 		progress[width] = '\0';
 		printf("\r[ N/A] [%s", progress);
 	}
 
-	if (axel->bytes_per_second > 1048576)
+	if (flux->bytes_per_second > 1048576)
 		printf("] [%6.1fMB/s]",
-		       (double)axel->bytes_per_second / (1024 * 1024));
-	else if (axel->bytes_per_second > 1024)
-		printf("] [%6.1fKB/s]", (double)axel->bytes_per_second / 1024);
+		       (double)flux->bytes_per_second / (1024 * 1024));
+	else if (flux->bytes_per_second > 1024)
+		printf("] [%6.1fKB/s]", (double)flux->bytes_per_second / 1024);
 	else
-		printf("] [%6.1fB/s]", (double)axel->bytes_per_second);
+		printf("] [%6.1fB/s]", (double)flux->bytes_per_second);
 
 	if (total != LLONG_MAX && done < total) {
 		int seconds, minutes, hours, days;
-		seconds = axel->finish_time - now;
+		seconds = flux->finish_time - now;
 		minutes = seconds / 60;
 		seconds -= minutes * 60;
 		hours = minutes / 60;
@@ -686,7 +848,7 @@ print_help(void)
 {
 	print_version();
 #ifdef NOGETOPTLONG
-	printf(_("Usage: axel [options] url1 [url2] [url...]\n"
+	printf(_("Usage: flux [options] url1 [url2] [url...]\n"
 		 "\n"
 		 "-s x\tSpecify maximum speed (bytes per second)\n"
 		 "-n x\tSpecify maximum number of connections\n"
@@ -707,9 +869,9 @@ print_help(void)
 		 "-T x\tSet I/O and connection timeout\n"
 		 "-V\tVersion information\n"
 		 "\n"
-		 "Visit https://github.com/axel-download-accelerator/axel/issues\n"));
+		 "Visit https://example.invalid/hyperflux/issues\n"));
 #else
-	printf(_("Usage: axel [options] url1 [url2] [url...]\n"
+	printf(_("Usage: flux [options] url1 [url2] [url...]\n"
 		 "\n"
 		 "--max-speed=x\t\t-s x\tSpecify maximum speed (bytes per second)\n"
 		 "--num-connections=x\t-n x\tSpecify maximum number of connections\n"
@@ -731,14 +893,14 @@ print_help(void)
 		 "--timeout=x\t\t-T x\tSet I/O and connection timeout\n"
 		 "--version\t\t-V\tVersion information\n"
 		 "\n"
-		 "Visit https://github.com/axel-download-accelerator/axel/issues to report bugs\n"));
+		 "Visit https://example.invalid/hyperflux/issues to report bugs\n"));
 #endif
 }
 
 void
 print_version(void)
 {
-	printf(_("Axel %s (%s)\n"), VERSION, ARCH);
+	printf(_("Hyperflux %s (%s)\n"), VERSION, ARCH);
 }
 
 void
@@ -756,18 +918,18 @@ print_version_info(void)
 	       _("Please, see the CREDITS file.\n\n"));
 }
 
-/* Print any message in the axel structure */
+/* Print any message in the flux structure */
 void
-print_messages(axel_t *axel)
+print_messages(flux_t *flux)
 {
 	message_t *m;
 
-	if (!axel)
+	if (!flux)
 		return;
 
-	while ((m = axel->message)) {
+	while ((m = flux->message)) {
 		printf("%s\n", m->text);
-		axel->message = m->next;
+		flux->message = m->next;
 		free(m);
 	}
 }

@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2001-2007 Wilmer van der Gaast
   Copyright 2008      Y Giridhar Appaji Nag
@@ -42,8 +42,8 @@
 
 /* Main include file */
 
-#ifndef AXEL_AXEL_H
-#define AXEL_AXEL_H
+#ifndef FLUX_FLUX_H
+#define FLUX_FLUX_H
 
 #include <time.h>
 #include <ctype.h>
@@ -93,7 +93,7 @@
 #define MAX_ADD_HEADERS	10
 #define MAX_REDIRECT		20
 #define DEFAULT_IO_TIMEOUT	120
-#define DEFAULT_USER_AGENT	"Axel/" VERSION " (" ARCH ")"
+#define DEFAULT_USER_AGENT	"Hyperflux/" VERSION " (" ARCH ")"
 
 typedef struct {
 	void *next;
@@ -101,7 +101,7 @@ typedef struct {
 } message_t;
 
 typedef message_t url_t;
-typedef message_t axel_if_t;
+typedef message_t flux_if_t;
 
 #include "abuf.h"
 #include "conf.h"
@@ -138,22 +138,22 @@ typedef struct {
 	int ready;
 	message_t *message, *last_message;
 	url_t *url;
-} axel_t;
+} flux_t;
 
-axel_t *axel_new(conf_t *conf, int count, const search_t *urls);
-int axel_open(axel_t *axel);
-void axel_start(axel_t *axel);
-void axel_do(axel_t *axel);
-void axel_close(axel_t *axel);
-void print_messages(axel_t *axel);
+flux_t *flux_new(conf_t *conf, int count, const search_t *urls);
+int flux_open(flux_t *flux);
+void flux_start(flux_t *flux);
+void flux_do(flux_t *flux);
+void flux_close(flux_t *flux);
+void print_messages(flux_t *flux);
 
-double axel_gettime(void);
-ssize_t axel_rand64(uint64_t *);
-int axel_rnd_init(void);
+double flux_gettime(void);
+ssize_t flux_rand64(uint64_t *);
+int flux_rnd_init(void);
 
 #define DN_MATCH_MALFORMED -1
 int dn_match(const char *hostname, const char *pat, size_t pat_len);
 
-char *axel_size_human(char *dst, size_t len, size_t value);
+char *flux_size_human(char *dst, size_t len, size_t value);
 
-#endif				/* AXEL_AXEL_H */
+#endif				/* FLUX_FLUX_H */

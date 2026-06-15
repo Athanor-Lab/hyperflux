@@ -1,5 +1,5 @@
 /*
-  Axel -- A lighter download accelerator for Linux and other Unices
+  Hyperflux -- A lighter download accelerator for Linux and other Unices
 
   Copyright 2001-2007 Wilmer van der Gaast
   Copyright 2008      Y Giridhar Appaji Nag
@@ -48,7 +48,7 @@
 /* HTTP control file */
 
 #include "config.h"
-#include "axel.h"
+#include "flux.h"
 
 #define HDR_CHUNK 512
 

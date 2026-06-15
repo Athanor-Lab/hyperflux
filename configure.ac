@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Autoconf for axel
+# Autoconf for flux
 AC_COPYRIGHT([
 Copyright 2016      Joao Eriberto Mota Filho
 Copyright 2016      Stephen Thirlwall
@@ -7,7 +7,7 @@ Copyright 2017      Antonio Quartulli
 Copyright 2017-2020 Ismael Luceno
 Copyright 2017      Vlad Glagolev
 
-This file is under the same license as Axel.
+This file is under the same license as Hyperflux.
 ])
 
 AC_PREREQ([2.72])
@@ -16,8 +16,8 @@ m4_ifdef([AX_IS_RELEASE],, [
     m4_fatal([autoconf-archive is required])
 ])
 
-AXEL_PKG([axel], [https://github.com/axel-download-accelerator/axel/issues])
-AXEL_VER_READ([VERSION])
+FLUX_PKG([Hyperflux], [https://example.invalid/hyperflux/issues], [flux])
+FLUX_VER_READ([VERSION])
 AC_INIT
 
 AC_CONFIG_AUX_DIR([build-aux])
@@ -156,13 +156,13 @@ AS_IF([test "x$ac_cv_type_signal" = xint], [
 ])
 
 # Custom type checks and replacements
-AXEL_CHECK_TYPE([off_t], [sizeof(off_t) >= sizeof(int64_t)])
-AXEL_DEFAULT_TYPE([off_t], [int64_t])
+FLUX_CHECK_TYPE([off_t], [sizeof(off_t) >= sizeof(int64_t)])
+FLUX_DEFAULT_TYPE([off_t], [int64_t])
 
 # OS-specific issues
 AS_CASE(["$host_os"],
   [darwin*], [
-    AXEL_CHECK_TYPE([intmax_t], [sizeof(intmax_t) >= sizeof(int64_t)])
+    FLUX_CHECK_TYPE([intmax_t], [sizeof(intmax_t) >= sizeof(int64_t)])
   ])
 
 # Checks for library functions.
@@ -196,7 +196,7 @@ AC_REPLACE_FUNCS([ \
 ])
 
 # Check for missing features/flags
-AXEL_CHECK_MACRO([O_NONBLOCK], [fcntl.h])
+FLUX_CHECK_MACRO([O_NONBLOCK], [fcntl.h])
 
 # Optional (but included-by-default) ssl support
 AS_IF([test "x$with_ssl" = xyes], [with_ssl=openssl])
@@ -251,7 +251,7 @@ AS_IF([date -j >/dev/null 2>&1], [
 ], [
   pdate() { date -d "$@"; }
 ])
-RELDATE_PRETTY=$(pdate '_AXEL_RELDATE' '+%B %e, %Y')
+RELDATE_PRETTY=$(pdate '_FLUX_RELDATE' '+%B %e, %Y')
 AC_SUBST([RELDATE_PRETTY])
 
 # etc path

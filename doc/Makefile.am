@@ -1,8 +1,8 @@
 EXTRA_DIST += \
-	doc/axelrc.example \
-	doc/axel.txt
+	doc/fluxrc.example \
+	doc/flux.txt
 
-dist_man_MANS = doc/axel.1
+dist_man_MANS = doc/flux.1
 
 PACKAGE_DESC = lightweight command line download accelerator
 doc_reldate = @RELDATE_PRETTY@

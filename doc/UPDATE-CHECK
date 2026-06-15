@@ -1,3 +1,6 @@
+Hyperflux is a fork of Axel. Hyperflux ships no online update-check; this file
+is only the maintainer checklist for cutting a new release.
+
 When updating, change these files (if needed):
 
 - VERSION [0]

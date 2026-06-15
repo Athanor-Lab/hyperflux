@@ -1,6 +1,6 @@
 ############################################################################
 ##                                                                        ##
-##   Example configuration file for Axel - A light download accelerator   ##
+##                Example configuration file for Hyperflux                ##
 ##                                                                        ##
 ############################################################################
 
@@ -9,19 +9,19 @@
 #
 # reconnect_delay = 20
 
-# You can set a maximum speed (bytes per second) here, Axel will try to be
+# You can set a maximum speed (bytes per second) here, Hyperflux will try to be
 # at most 5% faster or 5% slower.
 #
 # max_speed = 0
 
-# You can set the maximum number of connections Axel will try to set up
+# You can set the maximum number of connections Hyperflux will try to set up
 # here. There's a value precompiled in the program too, setting this too
 # high requires recompilation. PLEASE respect FTP server operators and other
 # users: Don't set this one too high!!! 4 is enough in most cases.
 #
 # num_connections = 4
 
-# Set the maximum number of redirects that Axel is allowed to follow. The
+# Set the maximum number of redirects that Hyperflux is allowed to follow. The
 # default value is 20.
 #
 # max_redirect = 20
@@ -32,7 +32,7 @@
 # connection_timeout = 45
 
 # Set proxies. no_proxy is a comma-separated list of domains which are
-# local, axel won't use any proxy for them. You don't have to specify full
+# local, flux won't use any proxy for them. You don't have to specify full
 # hostnames there.
 
 # Choose the IP protocol to use among IPv4 and IPv6. When a protocol is
@@ -99,12 +99,12 @@
 # search_amount = 15
 # search_top = 3
 
-# If you have multiple interfaces to the Internet, you can make Axel use all
+# If you have multiple interfaces to the Internet, you can make Hyperflux use all
 # of them by listing them here (interface name or IP address). If one of the
 # interfaces is faster than the other(s), you can list it more than once and
 # it will be used more often.
 #
-# This option is blank by default, which means Axel uses the first match in
+# This option is blank by default, which means Hyperflux uses the first match in
 # the routing table.
 #
 # interfaces = 
@@ -114,10 +114,10 @@
 #
 # alternate_output = 1
 #
-# Set this to 1 to avoid axel to download a file if one with the same name
+# Set this to 1 to avoid flux to download a file if one with the same name
 # already exists in the current folder and no state file is found.
-# Normally, axel will add .<number> to the name of the file in cases where
-# that file already exists. With the no_clobber option, axel will skip
+# Normally, flux will add .<number> to the name of the file in cases where
+# that file already exists. With the no_clobber option, flux will skip
 # downloading this file altogether.
 #
 # no_clobber = 1

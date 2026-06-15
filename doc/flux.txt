@@ -1,18 +1,18 @@
 NAME
- axel - light command line download accelerator
+ flux - light command line download accelerator
 
 SYNOPSIS
- axel [OPTIONS] url1 [url2] [url...]
+ flux [OPTIONS] url1 [url2] [url...]
 
 DESCRIPTION
- Axel is a program that downloads a file from a FTP or HTTP server through multiple connection.
+ Hyperflux is a program that downloads a file from a FTP or HTTP server through multiple connection.
  Each connection downloads its own part of the file.
 
- Unlike most other programs, Axel downloads all the data directly to the destination file.
+ Unlike most other programs, Hyperflux downloads all the data directly to the destination file.
  It saves some time at the end because the program does not have to
  concatenate all the downloaded parts.
 
- Axel supports HTTP, HTTPS, FTP and FTPS protocols.
+ Hyperflux supports HTTP, HTTPS, FTP and FTPS protocols.
 
 OPTIONS
  One argument is required, the URL to the file you want to download. When downloading from FTP,
@@ -21,6 +21,11 @@ OPTIONS
  for the download.
 
  Please note that the program does not check whether the files are equal.
+
+ A single URL argument may instead contain a range or list pattern, in which case it expands into
+ several separate downloads run one after another, each still accelerated with multiple connections.
+ See URL EXPANSION below. Multiple distinct URL arguments are always treated as mirrors of one file,
+ not as separate downloads.
 
  Other options:
 
@@ -35,9 +40,12 @@ OPTIONS
 
  --output=x, -o x  Downloaded data will be put in a local file with the same name, unless you specify
                    a different name using this option. You can specify a directory as well, the program
-                   will append the filename.
+                   will append the filename. When the URL expands into several downloads (see URL
+                   EXPANSION), a directory receives each per-URL name, and a "#N" placeholder in the
+                   name is replaced by the value the Nth pattern took. A plain single filename is
+                   refused when the expansion yields more than one URL, as it would clobber itself.
 
- --search[=x], -S[x]  Axel can do a search for mirrors using the filesearching.com search engine. This
+ --search[=x], -S[x]  Hyperflux can do a search for mirrors using the filesearching.com search engine. This
                       search will be done if you use this option. You can specify how many different
                       mirrors should be used for the download as well. The search for mirrors can be
                       time-consuming because the program tests every server's speed, and it checks
@@ -68,7 +76,7 @@ OPTIONS
                    RFC 2616 section 4.2 and 14 for details on the format and standardized headers.
 
  --user-agent=x, -U x  Set the HTTP user agent to use. Some websites serve different content based upon
-                       this parameter. The default value will include "Axel", its version and the platform.
+                       this parameter. The default value will include "Hyperflux", its version and the platform.
 
  --help, -h  A brief summary of all the options.
 
@@ -80,6 +88,34 @@ NOTE
  Long (double dash) options are supported only if your platform knows about the getopt_long call. If it
  does not (like *BSD), only the short options can be used.
 
+URL EXPANSION
+ A single URL argument may contain brace or bracket patterns. Hyperflux expands such a URL into several
+ separate downloads, run one after another, each still accelerated with multiple connections. This is
+ distinct from passing several URL arguments, which are always treated as mirrors of one file.
+
+ The following pattern syntaxes are supported:
+
+ {a,b,c}  A list. Each comma-separated item produces one URL.
+
+ {N..M}, {N..M..S}  A bash-style numeric range from N to M. It may descend (when N is greater than M),
+                    and an optional step S sets the increment. When the bounds are zero-padded, the
+                    values keep the width of the wider token.
+
+ {a..z}  A bash-style single-character range.
+
+ [N-M], [N-M:S]  A curl-style numeric range from N to M, ascending only, with an optional step S.
+
+ [a-z], [a-z:S]  A curl-style single-character range, with an optional step S.
+
+ A group is expanded only when it fully matches one of the forms above; anything else is left
+ untouched, so IPv6 literals and CGI parameters are not affected.
+
+ A single expansion may produce at most 10000 URLs; beyond that Hyperflux refuses to run.
+
+ Take care with shell quoting. Quote the URL with single quotes so the shell does not expand the
+ braces itself; an unquoted {01..12} is expanded by the shell into separate arguments, which Hyperflux
+ would then treat as mirrors. Bracket forms such as [01-12] usually survive unquoted.
+
 RETURN VALUE
  The program returns 0 when the download was successful, 1 if something really went wrong and 2 if the
  download was interrupted. If something else comes back, it must be a bug.
@@ -87,35 +123,45 @@ RETURN VALUE
 EXAMPLES
  The trivial usage to download a file is similar to:
 
-    $ axel http://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-9.1.0-amd64-netinst.iso
+    $ flux http://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-9.1.0-amd64-netinst.iso
 
-    $ axel ftp://ftp.nl.kernel.org/pub/linux/kernel/v2.2/linux-2.2.20.tar.bz2
+    $ flux ftp://ftp.nl.kernel.org/pub/linux/kernel/v2.2/linux-2.2.20.tar.bz2
 
  This will use the Belgian, Dutch, English and German kernel.org mirrors to download a Linux 2.4.17
  kernel image.
 
-    $ axel ftp://ftp.{be,nl,uk,de}.kernel.org/pub/linux/kernel/v2.4/linux-2.4.17.tar.bz2
+    $ flux ftp://ftp.{be,nl,uk,de}.kernel.org/pub/linux/kernel/v2.4/linux-2.4.17.tar.bz2
 
  This will do a search for the linux-2.4.17.tar.bz2 file on filesearching.com and it'll use the four (if possible)
  fastest mirrors for the download (possibly including ftp.kernel.org).
 
-    $ axel -S4 ftp://ftp.kernel.org/pub/linux/kernel/v2.4/linux-2.4.17.tar.bz2
+    $ flux -S4 ftp://ftp.kernel.org/pub/linux/kernel/v2.4/linux-2.4.17.tar.bz2
+
+ This expands one URL into twelve separate downloads, video01.mp4 through video12.mp4 (see URL
+ EXPANSION). The URL is quoted so the shell leaves the brackets for Hyperflux.
+
+    $ flux 'http://example.com/video[01-12].mp4'
+
+ This downloads v1.mp4 through v5.mp4 and writes them as clip1.mp4 through clip5.mp4, the "#1"
+ placeholder taking the value of the first (and only) pattern.
+
+    $ flux -o 'clip#1.mp4' 'http://example.com/v[1-5].mp4'
 
 FILES
- /etc/axelrc  System-wide configuration file.
+ /etc/fluxrc  System-wide configuration file.
 
- ~/.axelrc  Personal configuration file.
+ ~/.fluxrc  Personal configuration file.
 
  These files are not documented in a manpage, but the example file which comes with the program contains
  enough information. The position of the system-wide configuration file might be different. In source code this
- example file is at doc/ directory. It's generally installed under /usr/share/doc/axel/examples/, or the
+ example file is at doc/ directory. It's generally installed under /usr/share/doc/flux/examples/, or the
  equivalent for your system.
 
 COPYRIGHT
- Axel was originally written by Wilmer van der Gaast and other authors over time. Please, see the AUTHORS and CREDITS files.
+ Hyperflux was originally written by Wilmer van der Gaast and other authors over time. Please, see the AUTHORS and CREDITS files.
 
- The project homepage is <https://github.com/axel-download-accelerator/axel>
+ The project homepage is <https://example.invalid/hyperflux>
 
 HELP THIS PROJECT
  If you intent to help, please, read the CONTRIBUTING.md file. On Debian systems, this file will be available at
- /usr/share/doc/axel/ directory.
+ /usr/share/doc/flux/ directory.
