@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/xAlcahest/hyperflux/security/advisories/new
+    about: >
+      Please do not open public issues for security problems. Report
+      vulnerabilities privately through GitHub Security Advisories. See
+      SECURITY.md for the full disclosure policy.

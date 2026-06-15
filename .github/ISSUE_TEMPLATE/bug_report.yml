@@ -1,0 +1,90 @@
+name: Bug report
+description: Report a problem with Hyperflux so it can be fixed.
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill in as much
+        detail as you can. Reports with a reproducible command and URL pattern
+        are far easier to act on.
+
+        Before opening, please search existing issues to avoid duplicates. Do
+        not report security vulnerabilities here; see SECURITY.md instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: A clear and concise description of the bug.
+      placeholder: Hyperflux exited with an error halfway through a multi-part download.
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command and URL pattern
+      description: >
+        The full flux command line you ran, including any range or list
+        pattern. Quote the URL exactly as you typed it. Redact any private
+        tokens or credentials.
+      render: shell
+      placeholder: |
+        flux -n 8 'http://example.com/video[01-12].mp4'
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual behavior
+      description: What you expected to happen, and what actually happened instead.
+      placeholder: |
+        Expected: all 12 files download and are saved to the current directory.
+        Actual: flux stops after the 3rd file with "connection reset".
+    validations:
+      required: true
+
+  - type: textarea
+    id: version
+    attributes:
+      label: flux --version output
+      description: Paste the complete output of `flux --version`.
+      render: shell
+      placeholder: |
+        $ flux --version
+        Hyperflux 1.0.0
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS / distribution
+      description: Operating system and version (e.g. Debian 12, Fedora 44, macOS 14, FreeBSD 14).
+      placeholder: Fedora 44
+    validations:
+      required: true
+
+  - type: dropdown
+    id: build-method
+    attributes:
+      label: Build method
+      description: How did you obtain this build of Hyperflux?
+      options:
+        - Distribution package
+        - Built from source (release tarball)
+        - Built from source (git checkout)
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Logs, configuration (~/.fluxrc), network setup, or anything else that may help.
+    validations:
+      required: false

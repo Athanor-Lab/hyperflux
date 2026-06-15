@@ -1,0 +1,49 @@
+name: Feature request
+description: Suggest an idea or improvement for Hyperflux.
+title: "[feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. Please describe the problem you
+        are trying to solve before the solution, so the discussion can stay
+        focused on the underlying need.
+
+        Please search existing issues first to avoid duplicates.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: >
+        What problem does this solve? Describe the use case and why the current
+        behavior is insufficient.
+      placeholder: When downloading large file sets I cannot limit the total bandwidth across all connections.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe what you would like Hyperflux to do.
+      placeholder: Add a global rate-limit option that caps aggregate throughput rather than per-connection speed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any alternative solutions or workarounds you have considered.
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Mockups, links, references to similar tools, or anything else that helps.
+    validations:
+      required: false
