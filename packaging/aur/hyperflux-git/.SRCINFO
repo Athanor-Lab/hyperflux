@@ -1,0 +1,20 @@
+pkgbase = hyperflux-git
+	pkgdesc = Lightweight CLI download accelerator (fork of Axel) with URL range/list expansion
+	pkgver = 1.0.0
+	pkgrel = 1
+	url = https://github.com/Athanor-Lab/hyperflux
+	arch = x86_64
+	arch = aarch64
+	license = GPL-2.0-or-later
+	makedepends = git
+	makedepends = autoconf-archive
+	makedepends = gettext
+	makedepends = pkgconf
+	makedepends = txt2man
+	depends = openssl
+	provides = hyperflux
+	conflicts = hyperflux
+	source = hyperflux-git::git+https://github.com/Athanor-Lab/hyperflux.git
+	sha256sums = SKIP
+
+pkgname = hyperflux-git
