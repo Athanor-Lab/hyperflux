@@ -1,0 +1,78 @@
+# nfpm v2 configuration for Hyperflux.
+#
+# Distro package name is "hyperflux" but the command/binary stays "flux"
+# (e.g. `pacman -S hyperflux` installs /usr/bin/flux). The source tarball and
+# build dir are flux-<ver> because PACKAGE_TARNAME is "flux".
+#
+# Build with (from the repo root, after `make install DESTDIR=stage prefix=/usr`):
+#   VERSION=1.0.0 nfpm package --config packaging/nfpm.yaml --packager deb --target dist/
+#   VERSION=1.0.0 nfpm package --config packaging/nfpm.yaml --packager rpm --target dist/
+#   VERSION=1.0.0 nfpm package --config packaging/nfpm.yaml --packager apk --target dist/
+name: hyperflux
+arch: amd64
+platform: linux
+# nfpm expands ${VERSION} from the environment (no default-value syntax is
+# supported, so VERSION must be set). The release workflow always exports it;
+# for local builds run e.g. `VERSION=1.0.0 nfpm package ...`.
+version: ${VERSION}
+version_schema: semver
+release: "1"
+section: net
+priority: optional
+maintainer: xAlcahest <xAlcahest@users.noreply.github.com>
+homepage: https://github.com/Athanor-Lab/hyperflux
+license: GPL-2.0-or-later
+description: |
+  Lightweight CLI download accelerator (fork of Axel) with URL range/list
+  expansion. Accelerates downloads with multiple connections and can expand a
+  single URL's {a,b}/{N..M}/[N-M] patterns into separate downloads.
+
+# OpenSSL is the only runtime dependency. nfpm does not translate package names
+# across formats, so set the per-format runtime dep to each distro's libssl
+# package. These are best-effort current names:
+#   - Debian/Ubuntu: libssl3 (Debian 12 / Ubuntu 22.04+; older releases ship
+#     libssl1.1).
+#   - RPM (Fedora/RHEL/openSUSE): openssl-libs.
+#   - Alpine (apk): libssl3 (Alpine 3.17+; provided by the openssl package).
+overrides:
+  deb:
+    depends:
+      - libssl3
+  rpm:
+    depends:
+      - openssl-libs
+  apk:
+    depends:
+      - libssl3
+
+# Files come from the staged install tree produced by:
+#   make install DESTDIR=stage prefix=/usr
+contents:
+  - src: stage/usr/bin/flux
+    dst: /usr/bin/flux
+
+  - src: stage/usr/share/man/man1/flux.1
+    dst: /usr/share/man/man1/flux.1
+    file_info:
+      mode: 0644
+
+  # gettext catalogs: one flux.mo per locale under LC_MESSAGES. A glob with a
+  # directory dst would flatten every locale's flux.mo into one dir and clobber
+  # them, so replicate the staged locale tree instead (type: tree).
+  - src: stage/usr/share/locale/
+    dst: /usr/share/locale
+    type: tree
+
+  # Example config shipped as documentation.
+  - src: doc/fluxrc.example
+    dst: /usr/share/doc/hyperflux/fluxrc.example
+    type: config|noreplace
+    file_info:
+      mode: 0644
+
+  # Upstream license text as the package copyright file. nfpm has no 'doc'
+  # type; a plain file entry installs it as regular package content.
+  - src: COPYING
+    dst: /usr/share/doc/hyperflux/copyright
+    file_info:
+      mode: 0644
