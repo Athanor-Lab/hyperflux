@@ -1,0 +1,13 @@
+# Dependabot configuration for Hyperflux.
+#
+# Only GitHub Actions are tracked here. Hyperflux is a C/autotools project and
+# its dependencies (OpenSSL, gettext, autoconf-archive, and the rest) come from
+# the system package manager and the autotools toolchain, none of which
+# Dependabot can manage. There is no applicable package ecosystem for the C
+# sources, so the only update stream below is github-actions.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref so only the latest commit's CI runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: CI only needs to read the checked-out source.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    env:
+      CC: ${{ matrix.cc }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang autoconf automake libtool \
+            autoconf-archive autopoint gettext pkg-config libssl-dev txt2man
+
+      - name: Bootstrap (autoreconf)
+        run: |
+          set -euo pipefail
+          autoreconf -fi
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+          # --disable-Werror: some pre-existing warnings are otherwise fatal.
+          ./configure --disable-Werror CC="${CC}"
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          make -j"$(nproc)"
+
+      - name: Unit test (url_glob, 35 checks)
+        run: |
+          set -euo pipefail
+          # Pure module, no autotools needed; built with the matrix compiler.
+          "${CC}" -D_DEFAULT_SOURCE -Wall -Wextra -g \
+            src/url_glob.c src/test_url_glob.c -o /tmp/test_url_glob
+          out="$(/tmp/test_url_glob)"
+          echo "${out}"
+          echo "${out}" | grep -q '^OK: all'
+
+      - name: Smoke test (localhost glob download)
+        run: |
+          set -euo pipefail
+
+          # Absolute path: the binary is run from inside temp dirs below.
+          flux="${GITHUB_WORKSPACE}/flux"
+          test -x "${flux}"
+
+          # Serve a temp dir over loopback only; assert the globbed download
+          # fetched all three files byte-for-byte. No external network.
+          srvdir="$(mktemp -d)"
+          workdir="$(mktemp -d)"
+          server_pid=""
+
+          cleanup() {
+            if [ -n "${server_pid}" ] && kill -0 "${server_pid}" 2>/dev/null; then
+              kill "${server_pid}" 2>/dev/null || true
+              wait "${server_pid}" 2>/dev/null || true
+            fi
+            rm -rf "${srvdir}" "${workdir}"
+          }
+          trap cleanup EXIT
+
+          # Distinct, non-trivial payloads so a wrong/empty file is caught.
+          head -c 4096  /dev/urandom > "${srvdir}/v01.bin"
+          head -c 8192  /dev/urandom > "${srvdir}/v02.bin"
+          head -c 16384 /dev/urandom > "${srvdir}/v03.bin"
+
+          # Pick an ephemeral port the kernel just confirmed is free.
+          port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+
+          python3 -m http.server "${port}" \
+            --bind 127.0.0.1 --directory "${srvdir}" >/dev/null 2>&1 &
+          server_pid=$!
+
+          # Wait for the server to accept connections (bounded).
+          for _ in $(seq 1 50); do
+            if python3 -c "import socket,sys; s=socket.socket(); s.settimeout(0.2); sys.exit(0 if s.connect_ex(('127.0.0.1', ${port}))==0 else 1)"; then
+              break
+            fi
+            sleep 0.2
+          done
+
+          assert_match() {
+            # $1 = served file, $2 = downloaded file
+            test -f "$2" || { echo "missing download: $2" >&2; exit 1; }
+            cmp -s "$1" "$2" || { echo "byte mismatch: $2" >&2; exit 1; }
+          }
+
+          # --- separate-downloads mode: glob expands to one file each,
+          #     written to the current working directory ---
+          sep="${workdir}/separate"
+          mkdir -p "${sep}"
+          ( cd "${sep}" && "${flux}" -q "http://127.0.0.1:${port}/v[01-03].bin" )
+          assert_match "${srvdir}/v01.bin" "${sep}/v01.bin"
+          assert_match "${srvdir}/v02.bin" "${sep}/v02.bin"
+          assert_match "${srvdir}/v03.bin" "${sep}/v03.bin"
+
+          # --- mirror mode: -o targets a directory, files land under it ---
+          mir="${workdir}/mirror"
+          mkdir -p "${mir}"
+          "${flux}" -q -o "${mir}/" "http://127.0.0.1:${port}/v[01-03].bin"
+          assert_match "${srvdir}/v01.bin" "${mir}/v01.bin"
+          assert_match "${srvdir}/v02.bin" "${mir}/v02.bin"
+          assert_match "${srvdir}/v03.bin" "${mir}/v03.bin"
+
+          echo "smoke OK: 6 files verified (separate + mirror)"
+
+  sanitizers:
+    name: sanitizers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: ASan/UBSan unit test (url_glob)
+        run: |
+          set -euo pipefail
+          # Pure module: no autotools needed, fast under sanitizers.
+          clang -D_DEFAULT_SOURCE -Wall -Wextra -g \
+            -fsanitize=address,undefined -fno-sanitize-recover=all \
+            src/url_glob.c src/test_url_glob.c -o /tmp/test_url_glob_san
+          export ASAN_OPTIONS=detect_leaks=1:abort_on_error=1
+          export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
+          out="$(/tmp/test_url_glob_san)"
+          echo "${out}"
+          echo "${out}" | grep -q '^OK: all'
