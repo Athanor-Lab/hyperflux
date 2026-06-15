@@ -10,7 +10,7 @@ Copyright 2017      Vlad Glagolev
 This file is under the same license as Hyperflux.
 ])
 
-AC_PREREQ([2.72])
+AC_PREREQ([2.71])
 PKG_PREREQ([0.29])
 m4_ifdef([AX_IS_RELEASE],, [
     m4_fatal([autoconf-archive is required])
