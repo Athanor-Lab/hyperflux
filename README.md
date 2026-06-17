@@ -30,6 +30,70 @@ For usage information, see the manual page:
 
     man flux
 
+## Installation
+
+The distro package is named `hyperflux`, but the command it installs is `flux`.
+
+### Arch / Manjaro / EndeavourOS
+
+Available from the AUR. With an AUR helper such as `yay`:
+
+    yay -S hyperflux        # latest stable release
+    yay -S hyperflux-git    # latest from git
+
+The installed binary is `flux`.
+
+### Gentoo
+
+Hyperflux ships an ebuild in `packaging/gentoo` and is heading to the GURU
+overlay. Add the overlay and install:
+
+    eselect repository enable guru
+    emaint sync -r guru
+    emerge net-misc/hyperflux
+
+### Debian / Ubuntu
+
+Download the `.deb` for your architecture from the
+[GitHub Releases](https://github.com/Athanor-Lab/hyperflux/releases) page and
+install it:
+
+    sudo apt install ./hyperflux_1.0.0_amd64.deb
+
+Proper apt repositories are coming.
+
+### Fedora / RHEL
+
+Download the `.rpm` from the
+[GitHub Releases](https://github.com/Athanor-Lab/hyperflux/releases) page and
+install it:
+
+    sudo dnf install ./hyperflux-1.0.0.x86_64.rpm
+
+Proper dnf repositories are coming.
+
+### Alpine
+
+Download the `.apk` from the
+[GitHub Releases](https://github.com/Athanor-Lab/hyperflux/releases) page and
+install it:
+
+    sudo apk add --allow-untrusted ./hyperflux_1.0.0.apk
+
+### Build from source
+
+Install the build dependencies (a C compiler, `make`, `autoconf`, `automake`,
+`libtool`, `autoconf-archive`, `gettext`, `pkg-config`, the OpenSSL development
+headers and `txt2man`), then build:
+
+    autoreconf -fi          # or ./autogen.sh; skip this on a release tarball
+    ./configure --disable-Werror
+    make
+    sudo make install
+
+A release tarball already ships `configure`, so the `autoreconf` step is only
+needed from a git checkout. The installed command is `flux`.
+
 ## How to help
 If you can code and are interested in improving Hyperflux, please read the
 [CONTRIBUTING.md](CONTRIBUTING.md) file; if you're looking for ideas check the

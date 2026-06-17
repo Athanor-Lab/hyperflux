@@ -1,0 +1,152 @@
+name: Release
+
+# Build source tarball + native packages and publish a GitHub Release when a
+# version tag (e.g. v1.0.0) is pushed.
+on:
+  push:
+    tags:
+      - 'v*'
+
+# The release job needs to create a Release and upload assets to this repo.
+permissions:
+  contents: write
+
+# nfpm release pinned for reproducibility. Bump deliberately.
+env:
+  NFPM_VERSION: "2.41.3"
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Full history + tags so the autotools version/RELDATE logic resolves.
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential autoconf automake libtool \
+            autoconf-archive autopoint gettext pkg-config \
+            libssl-dev txt2man
+
+      - name: Derive version
+        id: version
+        run: |
+          set -euo pipefail
+          # Tag is refs/tags/vX.Y.Z; strip the leading 'v' for package versions.
+          tag="${GITHUB_REF#refs/tags/}"
+          version="${tag#v}"
+          if [ -z "$version" ]; then
+            echo "Could not derive version from ref '$GITHUB_REF'" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building release $tag (version $version)"
+
+      - name: Bootstrap (autoreconf)
+        run: |
+          set -euo pipefail
+          autoreconf -fi
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+          # --disable-Werror: AX_COMPILER_FLAGS would otherwise make pre-existing
+          # warnings fatal on the CI toolchain.
+          ./configure --disable-Werror
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          make -j"$(nproc)"
+
+      - name: Make source tarball (make dist)
+        run: |
+          set -euo pipefail
+          make dist
+          # PACKAGE_TARNAME is 'flux', so this is flux-<ver>.tar.gz.
+          ls -l flux-*.tar.gz
+
+      - name: Stage install tree
+        run: |
+          set -euo pipefail
+          make install DESTDIR="$PWD/stage" prefix=/usr
+          # Sanity-check the binary and a couple of packaged paths landed.
+          test -x stage/usr/bin/flux
+          test -f stage/usr/share/man/man1/flux.1
+          find stage -type f | sort
+
+      - name: Install nfpm
+        run: |
+          set -euo pipefail
+          url="https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          curl -fsSL "$url" -o /tmp/nfpm.tar.gz
+          mkdir -p /tmp/nfpm
+          tar -xzf /tmp/nfpm.tar.gz -C /tmp/nfpm
+          sudo install -m 0755 /tmp/nfpm/nfpm /usr/local/bin/nfpm
+          # Verify it runs and reports the pinned version.
+          nfpm --version
+
+      - name: Build packages (.deb, .rpm, .apk)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # packaging/nfpm.yaml is authored separately and reads ${VERSION}.
+          nfpm package --config packaging/nfpm.yaml --packager deb --target dist/
+          nfpm package --config packaging/nfpm.yaml --packager rpm --target dist/
+          nfpm package --config packaging/nfpm.yaml --packager apk --target dist/
+          ls -l dist/
+
+      - name: Collect and rename artifacts
+        id: artifacts
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+
+          # Source tarball produced by 'make dist' (tarname is 'flux').
+          tarball="flux-${VERSION}.tar.gz"
+          if [ ! -f "$tarball" ]; then
+            # Fall back to whatever single tarball make dist produced.
+            tarball="$(ls flux-*.tar.gz | head -n1)"
+          fi
+          cp "$tarball" "artifacts/flux-${VERSION}.tar.gz"
+
+          # nfpm emits default-named files; normalize to the documented names.
+          deb="$(ls dist/*.deb | head -n1)"
+          rpm="$(ls dist/*.rpm | head -n1)"
+          apk="$(ls dist/*.apk | head -n1)"
+          cp "$deb" "artifacts/hyperflux_${VERSION}_amd64.deb"
+          cp "$rpm" "artifacts/hyperflux-${VERSION}.x86_64.rpm"
+          cp "$apk" "artifacts/hyperflux_${VERSION}.apk"
+
+          # Checksums over all release assets, paths relative to artifacts/.
+          ( cd artifacts && sha256sum -- * > SHA256SUMS )
+          cat artifacts/SHA256SUMS
+
+      - name: Create GitHub Release and upload assets
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/flux-${{ steps.version.outputs.version }}.tar.gz
+            artifacts/hyperflux_${{ steps.version.outputs.version }}_amd64.deb
+            artifacts/hyperflux-${{ steps.version.outputs.version }}.x86_64.rpm
+            artifacts/hyperflux_${{ steps.version.outputs.version }}.apk
+            artifacts/SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

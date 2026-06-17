@@ -1,0 +1,10 @@
+#!/usr/bin/make -f
+# Build Hyperflux with debhelper.
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	# configure.ac uses AX_COMPILER_FLAGS, which turns on -Werror by default.
+	# Disable it so harmless compiler warnings do not fail the build.
+	dh_auto_configure -- --disable-Werror
