@@ -57,8 +57,12 @@ overlay. Add the overlay and install:
 Add the apt repository (this also gets you future updates):
 
     curl -1sLf 'https://dl.cloudsmith.io/public/hyperflux/athanor-lab/gpg.1C966CF1BD82624F.key' | sudo gpg --dearmor -o /usr/share/keyrings/hyperflux-athanor-lab-archive-keyring.gpg
-    echo "deb [signed-by=/usr/share/keyrings/hyperflux-athanor-lab-archive-keyring.gpg] https://dl.cloudsmith.io/public/hyperflux/athanor-lab/deb/any-distro any-version main" | sudo tee /etc/apt/sources.list.d/hyperflux.list
+    . /etc/os-release
+    echo "deb [signed-by=/usr/share/keyrings/hyperflux-athanor-lab-archive-keyring.gpg] https://dl.cloudsmith.io/public/hyperflux/athanor-lab/deb/$ID $VERSION_CODENAME main" | sudo tee /etc/apt/sources.list.d/hyperflux.list
     sudo apt update && sudo apt install hyperflux
+
+On a derivative (Mint, Pop!\_OS, ...) swap `$ID $VERSION_CODENAME` for the
+upstream pair, e.g. `ubuntu jammy` or `debian bookworm`.
 
 Or grab a single `.deb` from the
 [GitHub Releases](https://github.com/Athanor-Lab/hyperflux/releases) page and
