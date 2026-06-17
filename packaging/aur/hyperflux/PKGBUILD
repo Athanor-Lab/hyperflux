@@ -1,0 +1,26 @@
+# Maintainer: xAlcahest <xAlcahest@users.noreply.github.com>
+
+pkgname=hyperflux
+pkgver=1.0.0
+pkgrel=1
+pkgdesc='Lightweight CLI download accelerator (fork of Axel) with URL range/list expansion'
+arch=('x86_64' 'aarch64')
+url='https://github.com/Athanor-Lab/hyperflux'
+license=('GPL-2.0-or-later')
+depends=('openssl')
+makedepends=('autoconf-archive' 'gettext' 'pkgconf' 'txt2man')
+# Upstream tarball is produced by 'make dist' as flux-$pkgver.tar.gz and unpacks to flux-$pkgver/.
+source=("$pkgname-$pkgver.tar.gz::https://github.com/Athanor-Lab/hyperflux/releases/download/v$pkgver/flux-$pkgver.tar.gz")
+sha256sums=('3646dd6055d4cf89d96dd20fc4f434121a2360816a8e565dc2ab2ce62642213f')
+
+build() {
+	cd "$srcdir/flux-$pkgver"
+	./configure --prefix=/usr --disable-Werror
+	make
+}
+
+package() {
+	cd "$srcdir/flux-$pkgver"
+	make DESTDIR="$pkgdir" install
+	install -Dm644 doc/fluxrc.example "$pkgdir/usr/share/doc/$pkgname/fluxrc.example"
+}
