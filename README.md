@@ -54,29 +54,50 @@ overlay. Add the overlay and install:
 
 ### Debian / Ubuntu
 
-Download the `.deb` for your architecture from the
+Add the apt repository (this also gets you future updates):
+
+    curl -1sLf 'https://dl.cloudsmith.io/public/hyperflux/athanor-lab/gpg.1C966CF1BD82624F.key' | sudo gpg --dearmor -o /usr/share/keyrings/hyperflux-athanor-lab-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/hyperflux-athanor-lab-archive-keyring.gpg] https://dl.cloudsmith.io/public/hyperflux/athanor-lab/deb/any-distro any-version main" | sudo tee /etc/apt/sources.list.d/hyperflux.list
+    sudo apt update && sudo apt install hyperflux
+
+Or grab a single `.deb` from the
 [GitHub Releases](https://github.com/Athanor-Lab/hyperflux/releases) page and
-install it:
+install it directly:
 
     sudo apt install ./hyperflux_1.0.0_amd64.deb
 
-Proper apt repositories are coming.
-
 ### Fedora / RHEL
 
-Download the `.rpm` from the
+Add the dnf/yum repository (this also gets you future updates):
+
+    sudo tee /etc/yum.repos.d/hyperflux.repo >/dev/null <<'EOF'
+    [hyperflux-athanor-lab]
+    name=hyperflux-athanor-lab
+    baseurl=https://dl.cloudsmith.io/public/hyperflux/athanor-lab/rpm/any-distro/any-version/$basearch
+    gpgkey=https://dl.cloudsmith.io/public/hyperflux/athanor-lab/gpg.1C966CF1BD82624F.key
+    gpgcheck=1
+    repo_gpgcheck=1
+    enabled=1
+    EOF
+    sudo dnf install hyperflux
+
+Or grab a single `.rpm` from the
 [GitHub Releases](https://github.com/Athanor-Lab/hyperflux/releases) page and
-install it:
+install it directly:
 
     sudo dnf install ./hyperflux-1.0.0.x86_64.rpm
 
-Proper dnf repositories are coming.
-
 ### Alpine
 
-Download the `.apk` from the
+Add the apk repository (this also gets you future updates):
+
+    curl -1sLf 'https://dl.cloudsmith.io/public/hyperflux/athanor-lab/rsa.7F72E89045765348.key' | sudo tee /etc/apk/keys/athanor-lab@hyperflux-7F72E89045765348.rsa.pub >/dev/null
+    echo 'https://dl.cloudsmith.io/public/hyperflux/athanor-lab/alpine/any-version/main' | sudo tee -a /etc/apk/repositories
+    sudo apk update && sudo apk add hyperflux
+
+Or grab a single `.apk` from the
 [GitHub Releases](https://github.com/Athanor-Lab/hyperflux/releases) page and
-install it:
+install it directly:
 
     sudo apk add --allow-untrusted ./hyperflux_1.0.0.apk
 
