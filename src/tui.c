@@ -361,3 +361,263 @@ tui_select_one(const char *title, const tui_item_t *items, size_t n)
 	tui_leave();
 	return result;
 }
+
+/* ---- multi-select ----------------------------------------------------- */
+
+/* Render the multi-select menu: a checkbox per row plus a selected count. */
+static void
+tui_draw_multi(const char *title, const tui_item_t *items, size_t n,
+	       const unsigned char *sel, size_t cursor, size_t top,
+	       size_t visible)
+{
+	tui_puts("\033[2J\033[H");	/* clear + home */
+	if (title) {
+		tui_puts("\033[1m");	/* bold */
+		tui_puts(title);
+		tui_puts("\033[0m\r\n");
+	}
+	tui_puts("  (up/down or j/k move, space toggle, a all, Enter confirm, q cancel)\r\n");
+
+	size_t nsel = 0;
+	for (size_t i = 0; i < n; i++)
+		if (sel[i])
+			nsel++;
+	char count[64];
+	snprintf(count, sizeof(count), "  %zu of %zu selected\r\n\r\n", nsel, n);
+	tui_puts(count);
+
+	size_t end = top + visible;
+	if (end > n)
+		end = n;
+	for (size_t i = top; i < end; i++) {
+		if (i == cursor)
+			tui_puts("\033[7m> ");	/* reverse video */
+		else
+			tui_puts("  ");
+		tui_puts(sel[i] ? "[x] " : "[ ] ");
+		tui_puts(items[i].label ? items[i].label : "");
+		if (i == cursor)
+			tui_puts("\033[0m");
+		tui_puts("\r\n");
+		if (items[i].detail) {
+			tui_puts("      \033[2m");	/* dim */
+			tui_puts(items[i].detail);
+			tui_puts("\033[0m\r\n");
+		}
+	}
+}
+
+/* Apply a comma-separated 1-based spec ("1,3-5,8" or "all"/"*") to sel[0..n).
+ * Returns 0 on success (sel updated), -1 on a malformed/out-of-range spec. */
+static int
+tui_apply_spec(const char *spec, unsigned char *sel, size_t n)
+{
+	while (*spec == ' ' || *spec == '\t')
+		spec++;
+	if (strcmp(spec, "all") == 0 || strcmp(spec, "*") == 0 ||
+	    strcmp(spec, "a") == 0) {
+		memset(sel, 1, n);
+		return 0;
+	}
+
+	unsigned char *tmp = calloc(n, 1);
+	if (!tmp)
+		return -1;
+	const char *p = spec;
+	int ok = 1;
+	while (*p && ok) {
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (*p < '0' || *p > '9') { ok = 0; break; }
+		size_t a = 0;
+		while (*p >= '0' && *p <= '9') {
+			a = a * 10 + (size_t)(*p - '0');
+			if (a > n + 1)
+				a = n + 1;
+			p++;
+		}
+		size_t b = a;
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (*p == '-') {
+			p++;
+			while (*p == ' ' || *p == '\t')
+				p++;
+			if (*p < '0' || *p > '9') { ok = 0; break; }
+			b = 0;
+			while (*p >= '0' && *p <= '9') {
+				b = b * 10 + (size_t)(*p - '0');
+				if (b > n + 1)
+					b = n + 1;
+				p++;
+			}
+		}
+		if (a < 1 || a > n || b < a || b > n) { ok = 0; break; }
+		for (size_t i = a; i <= b; i++)
+			tmp[i - 1] = 1;
+		while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
+			p++;
+		if (*p == ',') { p++; continue; }
+		if (*p == '\0')
+			break;
+		ok = 0;
+	}
+	if (ok)
+		memcpy(sel, tmp, n);
+	free(tmp);
+	return ok ? 0 : -1;
+}
+
+/* Non-TTY fallback for multi-select: numbered list + a spec line. Fills sel and
+ * returns the count, or -1 on cancel/EOF. */
+static int
+tui_fallback_multi(const char *title, const tui_item_t *items, size_t n,
+		   unsigned char *sel)
+{
+	if (title)
+		fprintf(stderr, "%s\n", title);
+	for (size_t i = 0; i < n; i++) {
+		fprintf(stderr, "  %zu) %s\n", i + 1,
+			items[i].label ? items[i].label : "");
+		if (items[i].detail)
+			fprintf(stderr, "       %s\n", items[i].detail);
+	}
+	fprintf(stderr,
+		"Select (e.g. 1,3-5,8 or 'all'; q to cancel): ");
+	fflush(stderr);
+
+	char line[256];
+	if (!fgets(line, sizeof(line), stdin))
+		return -1;
+	char *nl = strpbrk(line, "\r\n");
+	if (nl)
+		*nl = '\0';
+	if (line[0] == 'q' || line[0] == 'Q')
+		return -1;
+
+	memset(sel, 0, n);
+	if (tui_apply_spec(line, sel, n) != 0)
+		return -1;
+	int cnt = 0;
+	for (size_t i = 0; i < n; i++)
+		if (sel[i])
+			cnt++;
+	return cnt ? cnt : -1;
+}
+
+/* Build the malloc'd selected-index array from sel; returns count, sets *out.
+ * On OOM returns -2 with *out NULL. A zero count yields *out NULL, returns 0. */
+static int
+tui_collect(const unsigned char *sel, size_t n, size_t **out)
+{
+	*out = NULL;
+	size_t cnt = 0;
+	for (size_t i = 0; i < n; i++)
+		if (sel[i])
+			cnt++;
+	if (cnt == 0)
+		return 0;
+	size_t *idx = malloc(cnt * sizeof(*idx));
+	if (!idx)
+		return -2;
+	size_t k = 0;
+	for (size_t i = 0; i < n; i++)
+		if (sel[i])
+			idx[k++] = i;
+	*out = idx;
+	return (int)cnt;
+}
+
+int
+tui_select_many(const char *title, const tui_item_t *items, size_t n,
+		const unsigned char *preselect, size_t **out_idx)
+{
+	if (out_idx)
+		*out_idx = NULL;
+	if (!items || n == 0 || !out_idx)
+		return -1;
+
+	unsigned char *sel = calloc(n, 1);
+	if (!sel)
+		return -2;
+	if (preselect)
+		for (size_t i = 0; i < n; i++)
+			sel[i] = preselect[i] ? 1 : 0;
+
+	const char *term = getenv("TERM");
+	int is_dumb = !term || !*term || strcmp(term, "dumb") == 0;
+	if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO) || is_dumb) {
+		int cnt = tui_fallback_multi(title, items, n, sel);
+		if (cnt < 0) {
+			free(sel);
+			return -1;
+		}
+		int r = tui_collect(sel, n, out_idx);
+		free(sel);
+		return r;
+	}
+
+	if (tui_enter() != 0) {
+		int cnt = tui_fallback_multi(title, items, n, sel);
+		if (cnt < 0) {
+			free(sel);
+			return -1;
+		}
+		int r = tui_collect(sel, n, out_idx);
+		free(sel);
+		return r;
+	}
+
+	int cancelled = 0;
+	size_t cursor = 0, top = 0;
+	for (;;) {
+		int rows = tui_rows();
+		/* Reserve 5 lines for title/help/count; up to 2 rows per item. */
+		size_t visible = rows > 7 ? (size_t)(rows - 5) / 2 : 1;
+		if (visible == 0)
+			visible = 1;
+		if (cursor < top)
+			top = cursor;
+		else if (cursor >= top + visible)
+			top = cursor - visible + 1;
+
+		tui_draw_multi(title, items, n, sel, cursor, top, visible);
+		tui_resized = 0;
+
+		int key = tui_readkey();
+		if (key == 'q') {
+			cancelled = 1;
+			break;
+		} else if (key == '\r') {
+			break;
+		} else if (key == 'j') {
+			if (cursor + 1 < n)
+				cursor++;
+		} else if (key == 'k') {
+			if (cursor > 0)
+				cursor--;
+		} else if (key == ' ') {
+			sel[cursor] = !sel[cursor];
+		} else if (key == 'a') {	/* toggle all on/off */
+			int all = 1;
+			for (size_t i = 0; i < n; i++)
+				if (!sel[i]) { all = 0; break; }
+			memset(sel, all ? 0 : 1, n);
+		} else if (key == 'g') {
+			cursor = 0;
+		} else if (key == 'G') {
+			cursor = n - 1;
+		}
+		/* key == 0: redraw only (SIGWINCH or unknown sequence). */
+	}
+
+	tui_leave();
+
+	if (cancelled) {
+		free(sel);
+		return -1;
+	}
+	int r = tui_collect(sel, n, out_idx);
+	free(sel);
+	return r;
+}

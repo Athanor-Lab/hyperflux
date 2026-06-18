@@ -227,24 +227,231 @@ test_run_undefined_var(void)
 	extractor_free(ex);
 }
 
-/* 'list' is parsed but rejected at run time in F1. */
+/* ---- series mode (F4) --------------------------------------------------- */
+
+/* An AnimeWorld-like series config: 'list' captures every episode href, the
+ * per-episode pipeline turns {url} into the episode's media URL. */
+static const char *CFG_SERIES =
+	"name   series\n"
+	"match  example\\.[a-z]+/play/\n"
+	"list   episodes <- url regex href=\"(/play/[^\"]+/[A-Za-z0-9]+)\"\n"
+	"var    epid     <- url  regex /play/[^/]+/([A-Za-z0-9]+)\n"
+	"output https://cdn.example.com/v/{epid}.mp4\n";
+
+/* A saved series page listing several episodes (plus duplicates and a noise
+ * link the regex must not capture). */
+static const char *SERIES_HTML =
+	"<!doctype html><html><body>\n"
+	"<a class=\"other\" href=\"/login\">login</a>\n"
+	"<div class=\"episodes\">\n"
+	"  <a data-num=\"1\" href=\"/play/anime-name/Ep01\">1</a>\n"
+	"  <a data-num=\"2\" href=\"/play/anime-name/Ep02\">2</a>\n"
+	"  <a data-num=\"3\" href=\"/play/anime-name/Ep03\">3</a>\n"
+	"  <a data-num=\"3\" href=\"/play/anime-name/Ep03\">3 (dup)</a>\n"
+	"  <a data-num=\"4\" href=\"https://example.tv/play/anime-name/Ep04\">4</a>\n"
+	"</div></body></html>\n";
+
+/* A fetch stub returning a fixed body (the series HTML) handed via userdata.
+ * Used so 'list <- page' can be exercised without a network. */
+static int
+series_fetch(const char *url, const ext_header_t *headers, size_t nheaders,
+	     char **out_body, void *userdata)
+{
+	(void)url;
+	(void)headers;
+	(void)nheaders;
+	const char *html = userdata;
+	*out_body = NULL;
+	char *body = malloc(strlen(html) + 1);
+	if (!body)
+		return -1;
+	strcpy(body, html);
+	*out_body = body;
+	return 0;
+}
+
+/* 'list' captures ALL group-1 matches, resolved relative->absolute, deduped,
+ * order preserved. The list source is a 'get' body so a stub feeds the HTML. */
 static void
-test_list_not_supported(void)
+test_list_episodes(void)
 {
 	const char *cfg =
-		"name x\n"
-		"list eps <- url regex href=\"(/play/[^\"]+)\"\n"
-		"output {url}\n";
+		"name series\n"
+		"match example\\.[a-z]+/play/\n"
+		"get page <- https://example.tv/series/anime-name\n"
+		"list episodes <- page regex href=\"([^\"]*/play/[^\"]+/[A-Za-z0-9]+)\"\n"
+		"var epid <- url regex /play/[^/]+/([A-Za-z0-9]+)\n"
+		"output https://cdn.example.com/v/{epid}.mp4\n";
 	char *err = NULL;
-	extractor_t *ex = extractor_parse(cfg, "x.conf", &err);
-	CHECK(ex != NULL, "list config parses");
+	extractor_t *ex = extractor_parse(cfg, "series.conf", &err);
+	CHECK(ex != NULL, "series config parses");
+	if (!ex) {
+		printf("  parse err: %s\n", err ? err : "(none)");
+		free(err);
+		return;
+	}
+	CHECK(extractor_has_list(ex) == 1, "series config reports a list");
+
+	char **urls = NULL;
+	size_t n = 0;
+	int r = extractor_list_episodes(ex,
+		"https://example.tv/series/anime-name",
+		series_fetch, (void *)SERIES_HTML, &urls, &n, &err);
+	CHECK(r == 0, "list_episodes succeeds");
+	if (r != 0) {
+		printf("  list err: %s\n", err ? err : "(none)");
+		free(err);
+		extractor_free(ex);
+		return;
+	}
+	CHECK(n == 4, "list captured 4 unique episodes (dup dropped)");
+	if (n == 4) {
+		CHECK_STR(urls[0], "https://example.tv/play/anime-name/Ep01",
+			  "episode 1 resolved absolute");
+		CHECK_STR(urls[1], "https://example.tv/play/anime-name/Ep02",
+			  "episode 2 resolved absolute");
+		CHECK_STR(urls[2], "https://example.tv/play/anime-name/Ep03",
+			  "episode 3 (first of dup) preserved");
+		CHECK_STR(urls[3], "https://example.tv/play/anime-name/Ep04",
+			  "episode 4 absolute href passes through");
+	}
+	extractor_free_urls(urls, n);
+	extractor_free(ex);
+}
+
+/* A per-episode run must SKIP the 'list' directive and resolve {url} to media. */
+static void
+test_per_episode_run_skips_list(void)
+{
+	char *err = NULL;
+	extractor_t *ex = extractor_parse(CFG_SERIES, "series.conf", &err);
+	CHECK(ex != NULL, "series config parses for per-episode run");
 	if (!ex) { free(err); return; }
 
 	char *media = NULL;
-	int r = extractor_run(ex, "https://h/p", NULL, NULL, &media, &err);
-	CHECK(r < 0, "list directive is rejected at run time");
-	free(err);
+	int r = extractor_run(ex, "https://example.tv/play/anime-name/Ep02",
+			      NULL, NULL, &media, &err);
+	CHECK(r == 0, "per-episode run skips list, reaches output");
+	if (r != 0) {
+		printf("  run err: %s\n", err ? err : "(none)");
+		free(err);
+	} else {
+		CHECK_STR(media, "https://cdn.example.com/v/Ep02.mp4",
+			  "per-episode media URL from {url}");
+	}
+	free(media);
 	extractor_free(ex);
+}
+
+/* Pre-'list' var/get are series setup: run once during listing, NOT re-run
+ * per episode. This config has a pre-'list' `var seriesid <- url` whose regex
+ * only matches the series URL; if the per-episode run re-ran it against an
+ * episode URL it would fail. The per-episode pipeline must skip it. */
+static void
+test_pre_list_setup_not_rerun(void)
+{
+	const char *cfg =
+		"name series\n"
+		"match example\\.[a-z]+/(series|play)/\n"
+		"var seriesid <- url regex /series/([a-z-]+)\n"
+		"get page <- https://example.tv/series/{seriesid}\n"
+		"list episodes <- page regex href=\"([^\"]*/play/[^\"]+/[A-Za-z0-9]+)\"\n"
+		"var epid <- url regex /play/[^/]+/([A-Za-z0-9]+)\n"
+		"output https://cdn.example.com/v/{epid}.mp4\n";
+	char *err = NULL;
+	extractor_t *ex = extractor_parse(cfg, "series.conf", &err);
+	CHECK(ex != NULL, "pre-list-setup config parses");
+	if (!ex) {
+		printf("  parse err: %s\n", err ? err : "(none)");
+		free(err);
+		return;
+	}
+
+	/* Listing uses the series URL, so the pre-'list' var matches. */
+	char **urls = NULL;
+	size_t n = 0;
+	int r = extractor_list_episodes(ex,
+		"https://example.tv/series/anime-name",
+		series_fetch, (void *)SERIES_HTML, &urls, &n, &err);
+	CHECK(r == 0, "pre-list var matches on series URL during listing");
+	if (r != 0) {
+		printf("  list err: %s\n", err ? err : "(none)");
+		free(err);
+		err = NULL;
+	}
+	extractor_free_urls(urls, n);
+
+	/* Per-episode run with an episode URL (no '/series/' segment): the
+	 * pre-'list' var must be skipped, so the run still reaches output. */
+	char *media = NULL;
+	r = extractor_run(ex, "https://example.tv/play/anime-name/Ep02",
+			  NULL, NULL, &media, &err);
+	CHECK(r == 0, "per-episode run skips pre-list series setup");
+	if (r != 0) {
+		printf("  run err: %s\n", err ? err : "(none)");
+		free(err);
+	} else {
+		CHECK_STR(media, "https://cdn.example.com/v/Ep02.mp4",
+			  "per-episode output unaffected by pre-list var");
+	}
+	free(media);
+	extractor_free(ex);
+}
+
+/* ---- --episodes spec parsing -------------------------------------------- */
+
+static void
+test_episodes_spec(void)
+{
+	unsigned char *sel = NULL;
+	size_t nsel = 0;
+	char eb[128];
+
+	/* "1,3-5" over 8 episodes selects {1,3,4,5}. */
+	int r = extractor_parse_episodes("1,3-5", 8, &sel, &nsel, eb, sizeof(eb));
+	CHECK(r == 0, "spec '1,3-5' parses");
+	if (r == 0) {
+		CHECK(nsel == 4, "'1,3-5' selects 4 episodes");
+		unsigned char want[8] = {1,0,1,1,1,0,0,0};
+		int eq = 1;
+		for (size_t i = 0; i < 8; i++)
+			if (sel[i] != want[i]) eq = 0;
+		CHECK(eq, "'1,3-5' selects exactly {1,3,4,5}");
+	}
+	free(sel);
+
+	/* "1,3-5,8" over 8 -> {1,3,4,5,8}. */
+	sel = NULL; nsel = 0;
+	r = extractor_parse_episodes("1,3-5,8", 8, &sel, &nsel, eb, sizeof(eb));
+	CHECK(r == 0 && nsel == 5, "spec '1,3-5,8' selects 5");
+	if (r == 0) {
+		CHECK(sel[0] && sel[7] && !sel[1], "endpoints 1 and 8 selected");
+	}
+	free(sel);
+
+	/* whitespace tolerated. */
+	sel = NULL; nsel = 0;
+	r = extractor_parse_episodes(" 2 , 4 ", 5, &sel, &nsel, eb, sizeof(eb));
+	CHECK(r == 0 && nsel == 2, "spec ' 2 , 4 ' parses with spaces");
+	free(sel);
+
+	/* Bad specs are rejected (out of range, reversed, junk, empty). */
+	const char *bad[] = { "0", "9", "5-3", "1,,2", "abc", "1-", "-2",
+			      "1-9", "", "3-" };
+	for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+		sel = NULL; nsel = 0;
+		r = extractor_parse_episodes(bad[i], 8, &sel, &nsel, eb,
+					     sizeof(eb));
+		CHECK(r < 0 && sel == NULL,
+		      "bad --episodes spec rejected");
+		free(sel);
+	}
+
+	/* NULL spec and zero count are rejected without crashing. */
+	r = extractor_parse_episodes(NULL, 8, &sel, &nsel, eb, sizeof(eb));
+	CHECK(r < 0, "NULL spec rejected");
+	r = extractor_parse_episodes("1", 0, &sel, &nsel, eb, sizeof(eb));
+	CHECK(r < 0, "zero count rejected");
 }
 
 /* ---- relative -> absolute URL resolution -------------------------------- */
@@ -302,7 +509,10 @@ main(void)
 	test_run_chain();
 	test_run_nomatch_var();
 	test_run_undefined_var();
-	test_list_not_supported();
+	test_list_episodes();
+	test_per_episode_run_skips_list();
+	test_pre_list_setup_not_rerun();
+	test_episodes_spec();
 	test_resolve_url();
 	test_passthrough();
 
