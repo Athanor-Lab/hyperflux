@@ -124,4 +124,10 @@ int scan_is_ad_host(const char *host);
  * Returns 0 on success, negative on a write/argument error. */
 int scan_emit_config(const scan_result_t *r, int chosen, FILE *out);
 
+/* Derive the host-based config name scan_emit_config writes (e.g.
+ * www.animeworld.ac -> "animeworld"), used to build the default save filename
+ * <name>.conf. Writes a NUL-terminated name into `dst`. Returns 0 on success,
+ * negative on a NULL/empty argument. */
+int scan_config_name(const scan_result_t *r, char *dst, size_t len);
+
 #endif				/* FLUX_SCAN_H */

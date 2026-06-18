@@ -11,6 +11,12 @@ EXTRA_DIST = \
 	README.md \
 	CONTRIBUTING.md
 
+# Ship the bundled extractor configs ACTIVE: install into a discovery dir
+# (/usr/share/hyperflux/extractors) so a fresh install resolves matching pages
+# out of the box. dist_ also ships them in 'make dist'.
+extractorsdir = $(datadir)/hyperflux/extractors
+dist_extractors_DATA = examples/extractors/animeworld.conf
+
 include doc/Makefile.am
 
 distclean-local:

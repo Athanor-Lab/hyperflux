@@ -46,6 +46,9 @@
 #include <ctype.h>
 #include <regex.h>
 #include <dirent.h>
+#include <errno.h>
+#include <sys/stat.h>		/* mkdir (extractor_user_dir) */
+#include <sys/types.h>
 
 #include "extractor.h"
 
@@ -1659,4 +1662,48 @@ extractor_list(void)
 		scan_dir(ext_system_dirs[i], list_cb, NULL);
 	}
 	return 0;
+}
+
+/* Create `path` and any missing parents (mkdir -p), each at mode 0700. Mutates
+ * the buffer in place while walking separators, then restores them. Returns 0
+ * on success, -1 if any component could not be created. An existing directory
+ * is not an error. */
+static int
+mkdir_p(char *path)
+{
+	if (!path || !*path)	/* enforce the precondition; callers change */
+		return -1;
+	for (char *p = path + 1; *p; p++) {
+		if (*p != '/')
+			continue;
+		*p = '\0';
+		if (mkdir(path, 0700) != 0 && errno != EEXIST) {
+			*p = '/';
+			return -1;
+		}
+		*p = '/';
+	}
+	if (mkdir(path, 0700) != 0 && errno != EEXIST)
+		return -1;
+	return 0;
+}
+
+int
+extractor_user_dir(char *dst, size_t len, int create)
+{
+	if (!dst || len == 0)
+		return 0;
+	if (!user_config_dir(dst, len))
+		return 0;
+	if (create) {
+		/* mkdir_p mutates a writable copy so we never clobber the
+		 * caller's buffer on a path-walk failure. */
+		char tmp[4096];
+		int n = snprintf(tmp, sizeof(tmp), "%s", dst);
+		if (n <= 0 || (size_t)n >= sizeof(tmp))
+			return 0;
+		if (mkdir_p(tmp) != 0)
+			return 0;
+	}
+	return 1;
 }
