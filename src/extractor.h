@@ -53,6 +53,10 @@
 #define EXTRACTOR_MAX_VARS	64
 #define EXTRACTOR_MAX_HEADERS	16
 
+/* Cap the episode list a single 'list' directive can yield, so a malformed or
+ * hostile series page can't make us iterate (and download) without bound. */
+#define EXTRACTOR_MAX_EPISODES	2000
+
 /* One request header (K=V) attached to a `get` directive. */
 typedef struct {
 	char *key;
@@ -115,6 +119,61 @@ int extractor_matches(const extractor_t *ex, const char *url);
 int extractor_run(const extractor_t *ex, const char *page_url,
 		  extractor_fetch_fn fetch, void *userdata,
 		  char **out_media_url, char **err);
+
+/* True (1) if the config has a `list` directive (series mode), else 0. */
+int extractor_has_list(const extractor_t *ex);
+
+/* Series mode: evaluate the directives up to the first `list`, capture ALL of
+ * its group-1 matches, resolve each relative->absolute against `page_url`,
+ * dedup exact duplicates preserving order, and return the ordered episode-page
+ * URL array. On success stores a malloc'd array of malloc'd strings in *urls
+ * and the count in *n, returns 0. On failure returns negative and, if err is
+ * non-NULL, sets *err to a malloc'd diagnostic the caller frees; the urls/n
+ * outputs are left NULL/0. The array is freed with extractor_free_urls. */
+int extractor_list_episodes(const extractor_t *ex, const char *page_url,
+			    extractor_fetch_fn fetch, void *userdata,
+			    char ***urls, size_t *n, char **err);
+
+/* Free an episode-URL array returned by extractor_list_episodes /
+ * extractor_resolve_series. Safe on NULL. */
+void extractor_free_urls(char **urls, size_t n);
+
+/* Parse an --episodes spec ("1,3-5,8": comma list of 1-based numbers and N-M
+ * ranges) selecting from `count` available episodes. Allocates a `count`-long
+ * byte array in *out_sel where index i is 1 if episode i+1 is selected, else 0,
+ * and stores the number of selected episodes in *out_nsel. Returns 0 on success
+ * (caller frees *out_sel), -1 on a malformed spec or any out-of-range number
+ * (with *out_sel left NULL); on -1, if errbuf is non-NULL a short message is
+ * written there. `count` must be > 0. */
+int extractor_parse_episodes(const char *spec, size_t count,
+			     unsigned char **out_sel, size_t *out_nsel,
+			     char *errbuf, size_t errlen);
+
+/* Resolve one episode of a series. Discovers the config that matches the SERIES
+ * `page_url` (the episode URLs themselves usually do not match the series
+ * `match`), then runs its per-episode pipeline with the builtin {url} bound to
+ * `episode_url` (the engine skips the `list` directive). On success stores the
+ * resolved media URL in *out_media_url (malloc'd) and returns 0. On failure
+ * returns negative; if a diagnostic is available it is printed to stderr.
+ * `force_name`, if non-NULL, bypasses matching. */
+int extractor_run_series_episode(const char *page_url, const char *episode_url,
+				 const char *force_name,
+				 extractor_fetch_fn fetch, void *userdata,
+				 char **out_media_url);
+
+/* Discover/force a config like extractor_resolve, but for series mode: build
+ * the ordered episode-page URL list via extractor_list_episodes.
+ *
+ * Returns:
+ *   1  matched a config with a `list` (urls/n hold the episode set)
+ *   0  no config matched, or the matched config has no `list`
+ *  <0  error (a diagnostic is printed to stderr); urls/n left NULL/0
+ *
+ * On the 0 and error paths the urls output is NULL and n is 0. `force_name`,
+ * if non-NULL, bypasses matching and loads <force_name>.conf. */
+int extractor_resolve_series(const char *page_url, const char *force_name,
+			     extractor_fetch_fn fetch, void *userdata,
+			     char ***urls, size_t *n);
 
 /* Discover configs, pick the first whose `match` matches `page_url`, run it,
  * and store the resolved media URL in *out_media_url (malloc'd).

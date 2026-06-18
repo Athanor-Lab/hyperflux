@@ -70,6 +70,15 @@ static void print_version_info(void);
 static int get_term_width(void);
 static int download_one(conf_t *conf, const search_t *urls, int count,
 			const char *out_name);
+static int download_media_url(conf_t *conf, const char *media_url,
+			      const char *out_name, const char *hls_quality,
+			      const char *hls_mux);
+static int run_series(conf_t *conf, const char *page_url,
+		      const char *extract_name, char **episode_urls,
+		      size_t nepisodes, int select_all,
+		      const char *episodes_spec, int auto_yes,
+		      const char *out_name, const char *hls_quality,
+		      const char *hls_mux);
 static int is_directory(const char *p);
 static int has_numbered_ref(const char *tpl, size_t ncaps);
 static void resolve_outname(char *dst, size_t dlen, const char *tpl,
@@ -84,6 +93,8 @@ int run = 1;
 #define MUX_OPT		260
 #define EXTRACT_SCAN_OPT	261
 #define YES_OPT		262
+#define ALL_OPT		263
+#define EPISODES_OPT	264
 
 #ifdef NOGETOPTLONG
 #define getopt_long(a, b, c, d, e) getopt(a, b, c)
@@ -115,6 +126,8 @@ static struct option flux_options[] = {
 	{"yes",             0,      NULL, YES_OPT},
 	{"quality",         1,      NULL, QUALITY_OPT},
 	{"mux",             1,      NULL, MUX_OPT},
+	{"all",             0,      NULL, ALL_OPT},
+	{"episodes",        1,      NULL, EPISODES_OPT},
 	{NULL,              0,      NULL, 0}
 };
 #endif
@@ -326,6 +339,8 @@ main(int argc, char *argv[])
 	int auto_yes = 0;			/* --yes: no prompts */
 	const char *hls_quality = NULL;		/* --quality best|worst|<height> */
 	const char *hls_mux = NULL;		/* --mux mp4|ts */
+	int select_all = 0;			/* --all: every episode */
+	const char *episodes_spec = NULL;	/* --episodes 1,3-5,8 */
 
 	fn[0] = 0;
 
@@ -456,6 +471,12 @@ main(int argc, char *argv[])
 		case YES_OPT:
 			auto_yes = 1;
 			break;
+		case ALL_OPT:
+			select_all = 1;
+			break;
+		case EPISODES_OPT:
+			episodes_spec = optarg;
+			break;
 		case QUALITY_OPT:
 			hls_quality = optarg;
 			break;
@@ -578,6 +599,53 @@ main(int argc, char *argv[])
 		url_glob_t *items = NULL;
 		size_t n = 0, ncaps = 0;
 		char *resolved = NULL;
+
+		/* Series mode: if a matching config has a 'list', resolve the
+		 * episode set first. >1 episode -> select + batch download; a
+		 * 1-episode list falls through to the normal single path with
+		 * that episode's URL. No list -> normal single resolution. */
+		char **episode_urls = NULL;
+		size_t nepisodes = 0;
+		int sr = extractor_resolve_series(single, extract_name,
+						  extract_http_fetch, conf,
+						  &episode_urls, &nepisodes);
+		if (sr < 0) {
+			ret = 1;
+			goto cleanup;
+		}
+		if (sr == 1) {
+			/* A series config matched. >1 episode -> select + batch.
+			 * Exactly 1 -> resolve that episode via the same config
+			 * (its URL won't match the series `match`, so we cannot
+			 * re-discover) and download it directly. */
+			if (nepisodes > 1) {
+				ret = run_series(conf, single, extract_name,
+						 episode_urls, nepisodes,
+						 select_all, episodes_spec,
+						 auto_yes, fn, hls_quality,
+						 hls_mux);
+			} else {
+				char *media = NULL;
+				int er1 = extractor_run_series_episode(single,
+					episode_urls[0], extract_name,
+					extract_http_fetch, conf, &media);
+				if (er1 < 0 || !media) {
+					free(media);
+					ret = 1;
+				} else {
+					if (conf->verbose > 0)
+						printf(_("Extracted media URL: %s\n"),
+						       media);
+					ret = download_media_url(conf, media, fn,
+								 hls_quality,
+								 hls_mux);
+					free(media);
+				}
+			}
+			extractor_free_urls(episode_urls, nepisodes);
+			goto cleanup;
+		}
+		extractor_free_urls(episode_urls, nepisodes);
 
 		/* Resolve a web-page URL to a direct media URL via extractor
 		 * configs. No match -> resolved == copy of single (passthrough).
@@ -832,6 +900,261 @@ download_one(conf_t *conf, const search_t *urls, int count, const char *out_name
 	flux_close(flux);
 	conf->interfaces = saved_if;
 	return ret;
+}
+
+/* Download one already-resolved media URL into out_name (a file path, empty for
+ * a derived name, or a directory). Dispatches HLS playlists to hls_download and
+ * everything else to download_one. Returns 0 on success, non-zero on failure or
+ * interruption (mirrors download_one's 0/2 plus 1 for HLS/setup errors). */
+static int
+download_media_url(conf_t *conf, const char *media_url, const char *out_name,
+		   const char *hls_quality, const char *hls_mux)
+{
+#ifdef HAVE_SSL
+	if (hls_is_playlist_url(media_url))
+		return hls_download(conf, media_url, out_name, hls_quality,
+				    hls_mux) == 0 ? 0 : 1;
+#else
+	(void)hls_quality;
+	(void)hls_mux;
+#endif
+	search_t one;
+	memset(&one, 0, sizeof(one));
+	strlcpy(one.url, media_url, sizeof(one.url));
+	return download_one(conf, &one, 1, out_name);
+}
+
+/* Derive a unique, safe leaf filename for episode #num from its media URL.
+ * Writes into dst (always NUL-terminated). The 1-based episode number is always
+ * prefixed so two episodes never clobber even if their media leaves collide
+ * (e.g. both "index.m3u8"). The URL's last path segment supplies the suffix
+ * (sanitized to [A-Za-z0-9._-]); a missing/empty segment yields just the
+ * numbered name. */
+static void
+episode_basename(char *dst, size_t dlen, const char *media_url, size_t num)
+{
+	if (!dlen)
+		return;
+
+	/* Always-unique numeric prefix. */
+	int pre = snprintf(dst, dlen, "ep%02zu", num);
+	if (pre <= 0 || (size_t)pre >= dlen) {
+		if (dlen)
+			dst[0] = '\0';
+		return;
+	}
+	size_t o = (size_t)pre;
+
+	/* Take the segment after the last '/', dropping any query/fragment. */
+	const char *p = media_url;
+	const char *sep = strstr(media_url, "://");
+	if (sep)
+		p = sep + 3;
+	const char *last = p;
+	for (const char *c = p; *c && *c != '?' && *c != '#'; c++)
+		if (*c == '/')
+			last = c + 1;
+	size_t seglen = strcspn(last, "?#");
+
+	/* Sanitize and append "-<leaf>" only when the leaf has a useful char. */
+	int useful = 0;
+	for (size_t i = 0; i < seglen; i++) {
+		unsigned char c = (unsigned char)last[i];
+		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+		    (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-') {
+			if (c != '.')
+				useful = 1;
+		}
+	}
+	if (!useful)
+		return;	/* nothing meaningful to add: keep "epNN" */
+
+	if (o + 1 < dlen)
+		dst[o++] = '-';
+	for (size_t i = 0; i < seglen && o + 1 < dlen; i++) {
+		unsigned char c = (unsigned char)last[i];
+		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+		    (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-')
+			dst[o++] = (char)c;
+		else
+			dst[o++] = '_';
+	}
+	dst[o] = '\0';
+}
+
+/* Batch-download a selected subset of a series' episodes.
+ *
+ * episode_urls[0..nepisodes) are the ordered episode page URLs. Selection comes
+ * from --all, --episodes <spec>, or (interactively) the multi-select TUI. Each
+ * selected episode is re-resolved through the per-episode pipeline and
+ * downloaded; one failure does not abort the rest. out_name, if a directory (or
+ * empty), receives per-episode files; a plain -o file name is only honoured for
+ * a single selected episode (else it would clobber). Returns 0 if all selected
+ * succeeded, 2 on interrupt, 1 if any failed or on a setup error. */
+static int
+run_series(conf_t *conf, const char *page_url, const char *extract_name,
+	   char **episode_urls, size_t nepisodes, int select_all,
+	   const char *episodes_spec, int auto_yes, const char *out_name,
+	   const char *hls_quality, const char *hls_mux)
+{
+	unsigned char *sel = NULL;	/* sel[i] != 0 -> download episode i */
+	size_t nsel = 0;
+
+	if (select_all && episodes_spec) {
+		fprintf(stderr,
+			_("Use either --all or --episodes, not both.\n"));
+		return 1;
+	}
+
+	if (select_all) {
+		sel = malloc(nepisodes);
+		if (!sel) {
+			fprintf(stderr, _("flux: out of memory\n"));
+			return 1;
+		}
+		memset(sel, 1, nepisodes);
+		nsel = nepisodes;
+	} else if (episodes_spec) {
+		char eb[160];
+		if (extractor_parse_episodes(episodes_spec, nepisodes, &sel,
+					     &nsel, eb, sizeof(eb)) != 0) {
+			fprintf(stderr, "flux: %s\n", eb);
+			return 1;
+		}
+	} else {
+		/* Interactive (or non-TTY fallback) multi-select. With --yes and
+		 * no explicit selection on a non-TTY we must not guess: the TUI
+		 * fallback reads a spec from stdin; refuse if that is unavailable. */
+		if (auto_yes && !isatty(STDIN_FILENO)) {
+			fprintf(stderr,
+				_("flux: %zu episodes found; pass --all or --episodes to choose non-interactively.\n"),
+				nepisodes);
+			return 1;
+		}
+
+		tui_item_t *items = calloc(nepisodes, sizeof(*items));
+		char (*labels)[64] = calloc(nepisodes, sizeof(*labels));
+		if (!items || !labels) {
+			free(items);
+			free(labels);
+			fprintf(stderr, _("flux: out of memory\n"));
+			return 1;
+		}
+		for (size_t i = 0; i < nepisodes; i++) {
+			snprintf(labels[i], sizeof(labels[i]),
+				 "Episode %zu", i + 1);
+			items[i].label = labels[i];
+			items[i].detail = episode_urls[i];
+		}
+		size_t *idx = NULL;
+		int cnt = tui_select_many(_("Select episodes to download:"),
+					  items, nepisodes, NULL, &idx);
+		free(items);
+		free(labels);
+		if (cnt < 0) {	/* cancelled or OOM */
+			free(idx);
+			fprintf(stderr, _("flux: episode selection cancelled.\n"));
+			return 1;
+		}
+		if (cnt == 0) {
+			free(idx);
+			fprintf(stderr, _("flux: no episodes selected.\n"));
+			return 1;
+		}
+		sel = calloc(nepisodes, 1);
+		if (!sel) {
+			free(idx);
+			fprintf(stderr, _("flux: out of memory\n"));
+			return 1;
+		}
+		for (int i = 0; i < cnt; i++)
+			if ((size_t)idx[i] < nepisodes)
+				sel[idx[i]] = 1;
+		free(idx);
+		nsel = (size_t)cnt;
+	}
+
+	/* A plain -o file (not a directory) can hold only one episode. */
+	int out_is_dir = out_name && *out_name && is_directory(out_name);
+	int out_is_file = out_name && *out_name && !out_is_dir;
+	if (out_is_file && nsel > 1) {
+		fprintf(stderr,
+			_("Refusing to write %zu episodes to a single file '%s'; use a directory.\n"),
+			nsel, out_name);
+		free(sel);
+		return 1;
+	}
+
+	size_t done = 0, failed = 0, attempted = 0;
+	for (size_t i = 0; i < nepisodes && run; i++) {
+		if (!sel[i])
+			continue;
+		attempted++;
+
+		printf(_("\n=== episode %zu/%zu: %s ===\n"),
+		       i + 1, nepisodes, episode_urls[i]);
+
+		/* Re-run the per-episode pipeline (discovered via the SERIES
+		 * page URL; the engine skips 'list' and binds {url} to this
+		 * episode) to get the concrete media URL. */
+		char *media = NULL;
+		int er = extractor_run_series_episode(page_url, episode_urls[i],
+						      extract_name,
+						      extract_http_fetch, conf,
+						      &media);
+		if (er < 0 || !media) {
+			fprintf(stderr,
+				_("flux: episode %zu: could not resolve media URL.\n"),
+				i + 1);
+			free(media);
+			failed++;
+			continue;
+		}
+		if (conf->verbose > 0)
+			printf(_("Extracted media URL: %s\n"), media);
+
+		/* Build a distinct output path. For a directory (or empty -o)
+		 * derive a per-episode leaf so episodes never clobber. For a
+		 * single-episode plain -o, honour the given name verbatim. */
+		char outpath[MAX_STRING];
+		if (out_is_file) {
+			strlcpy(outpath, out_name, sizeof(outpath));
+		} else {
+			char base[96];
+			episode_basename(base, sizeof(base), media, i + 1);
+			if (out_is_dir) {
+				int w = snprintf(outpath, sizeof(outpath),
+						 "%s/%s", out_name, base);
+				if (w <= 0 || (size_t)w >= sizeof(outpath)) {
+					fprintf(stderr,
+						_("flux: episode %zu: output path too long.\n"),
+						i + 1);
+					free(media);
+					failed++;
+					continue;
+				}
+			} else {
+				strlcpy(outpath, base, sizeof(outpath));
+			}
+		}
+
+		int r = download_media_url(conf, media, outpath, hls_quality,
+					   hls_mux);
+		free(media);
+		if (r == 0)
+			done++;
+		else
+			failed++;
+	}
+
+	free(sel);
+
+	printf(_("\nEpisodes: %zu requested, %zu downloaded, %zu failed.\n"),
+	       nsel, done, failed);
+
+	if (!run && attempted < nsel)
+		return 2;	/* interrupted before finishing the batch */
+	return failed ? 1 : 0;
 }
 
 /* Return 1 if p exists and is a directory, 0 otherwise. */
@@ -1170,6 +1493,8 @@ print_help(void)
 		 "--extract-list\t\t\tList discovered extractor configs\n"
 		 "--extract-scan=url\t\tScan a page and emit a starter config\n"
 		 "--yes\t\t\t\tNon-interactive: auto-pick the top candidate\n"
+		 "--all\t\t\t\tSeries: download every episode (no prompt)\n"
+		 "--episodes=spec\t\t\tSeries: pick episodes, e.g. 1,3-5,8 (1-based)\n"
 		 "--quality=q\t\t\tHLS variant: best|worst|<height> (default best)\n"
 		 "--mux=c\t\t\t\tHLS container: mp4|ts (default mp4 if ffmpeg)\n"
 		 "--version\t\t-V\tVersion information\n"

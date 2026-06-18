@@ -43,6 +43,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <ctype.h>
 #include <regex.h>
 #include <dirent.h>
 
@@ -290,6 +291,88 @@ regex_capture1(const char *ere, const char *src, char **out, char **err)
 		return -1;
 	*out = cap;
 	return 1;
+}
+
+/* Run `ere` over `src` repeatedly, appending every group-1 match (malloc'd) to
+ * a caller-owned growable array. Stops after `cap_max` matches. On a compile
+ * error sets *err and returns -1. Returns the number of matches appended (>= 0)
+ * otherwise. On any allocation failure frees what it added, sets *out=NULL,
+ * *n=0, and returns -1. The empty-array (zero-match) case returns 0. */
+static int
+regex_capture_all(const char *ere, const char *src, size_t cap_max,
+		  char ***out, size_t *n, char **err)
+{
+	regex_t re;
+	regmatch_t m[2];
+	int rc;
+
+	*out = NULL;
+	*n = 0;
+
+	rc = regcomp(&re, ere, REG_EXTENDED);
+	if (rc != 0) {
+		if (err) {
+			char ebuf[256];
+			regerror(rc, &re, ebuf, sizeof(ebuf));
+			ext_set_err(err, NULL, 0, "bad regex /%s/: %s",
+				    ere, ebuf);
+		}
+		regfree(&re);
+		return -1;
+	}
+	if (re.re_nsub < 1) {
+		if (err)
+			ext_set_err(err, NULL, 0,
+				    "regex /%s/ has no capture group ()", ere);
+		regfree(&re);
+		return -1;
+	}
+
+	char **arr = NULL;
+	size_t count = 0, cap = 0;
+	const char *p = src;
+
+	while (count < cap_max && regexec(&re, p, 2, m, 0) == 0) {
+		if (m[1].rm_so >= 0) {
+			size_t len = (size_t)(m[1].rm_eo - m[1].rm_so);
+			char *item = ext_strndup(p + m[1].rm_so, len);
+			if (!item)
+				goto oom;
+			if (count >= cap) {
+				size_t ncap = cap ? cap * 2 : 16;
+				char **na = realloc(arr, ncap * sizeof(*na));
+				if (!na) {
+					free(item);
+					goto oom;
+				}
+				arr = na;
+				cap = ncap;
+			}
+			arr[count++] = item;
+		}
+		/* Advance past this whole match; guard against a zero-width
+		 * match (e.g. an ERE that can match empty) to avoid spinning. */
+		regoff_t adv = m[0].rm_eo;
+		if (adv <= 0)
+			adv = 1;
+		p += adv;
+		if (!*p)
+			break;
+	}
+
+	regfree(&re);
+	*out = arr;
+	*n = count;
+	return (int)count;
+
+ oom:
+	regfree(&re);
+	for (size_t i = 0; i < count; i++)
+		free(arr[i]);
+	free(arr);
+	if (err)
+		ext_set_err(err, NULL, 0, "out of memory capturing list");
+	return -1;
 }
 
 /* ---- relative -> absolute URL resolution ------------------------------ */
@@ -773,17 +856,23 @@ extractor_run(const extractor_t *ex, const char *page_url,
 
 	int ret = -1;
 
-	/* Reject series mode up front so a 'list' after 'output' is deferred,
-	 * not silently dropped (the eval loop may never reach it). See F1 spec. */
+	/* Series mode: directives up to and including the first 'list' are
+	 * series setup, run once on the series page by extractor_list_episodes.
+	 * A per-episode run executes only the post-'list' pipeline with {url}
+	 * bound to the episode. With no 'list', every directive runs. See #F4. */
+	size_t list_idx = ex->ndirectives;
 	for (size_t i = 0; i < ex->ndirectives; i++)
 		if (ex->directives[i].kind == EXT_DIR_LIST) {
-			ext_set_err(err, ex->path, 0,
-				    "'list' (series mode) is not yet supported");
-			goto done;
+			list_idx = i;
+			break;
 		}
 
 	for (size_t i = 0; i < ex->ndirectives; i++) {
 		const ext_directive_t *d = &ex->directives[i];
+
+		/* Skip series-setup directives (at or before the first 'list'). */
+		if (i <= list_idx && list_idx < ex->ndirectives)
+			continue;
 
 		if (d->kind == EXT_DIR_VAR) {
 			const char *src = store_get(&st, d->source,
@@ -893,6 +982,332 @@ extractor_run(const extractor_t *ex, const char *page_url,
 	ext_set_err(err, ex->path, 0, "config produced no output");
 
  done:
+	store_free(&st);
+	return ret;
+}
+
+/* ---- series mode ------------------------------------------------------ */
+
+int
+extractor_has_list(const extractor_t *ex)
+{
+	if (!ex)
+		return 0;
+	for (size_t i = 0; i < ex->ndirectives; i++)
+		if (ex->directives[i].kind == EXT_DIR_LIST)
+			return 1;
+	return 0;
+}
+
+void
+extractor_free_urls(char **urls, size_t n)
+{
+	if (!urls)
+		return;
+	for (size_t i = 0; i < n; i++)
+		free(urls[i]);
+	free(urls);
+}
+
+/* Parse a non-negative integer at *p (advancing it). Returns -1 if no digit is
+ * present or the value overflows our episode cap. */
+static long
+parse_uint(const char **p)
+{
+	const char *s = *p;
+	if (!isdigit((unsigned char)*s))
+		return -1;
+	long v = 0;
+	while (isdigit((unsigned char)*s)) {
+		v = v * 10 + (*s - '0');
+		if (v > EXTRACTOR_MAX_EPISODES + 1)	/* clamp; range-checked below */
+			v = EXTRACTOR_MAX_EPISODES + 1;
+		s++;
+	}
+	*p = s;
+	return v;
+}
+
+int
+extractor_parse_episodes(const char *spec, size_t count,
+			 unsigned char **out_sel, size_t *out_nsel,
+			 char *errbuf, size_t errlen)
+{
+	if (out_sel)
+		*out_sel = NULL;
+	if (out_nsel)
+		*out_nsel = 0;
+	if (errbuf && errlen)
+		errbuf[0] = '\0';
+	if (!spec || !out_sel || !out_nsel || count == 0)
+		return -1;
+
+	unsigned char *sel = calloc(count, 1);
+	if (!sel)
+		return -1;
+
+	const char *p = spec;
+	int ok = 1;
+	while (*p && ok) {
+		while (*p == ' ' || *p == '\t')
+			p++;
+		long a = parse_uint(&p);
+		if (a < 1 || (size_t)a > count) {
+			ok = 0;
+			break;
+		}
+		long b = a;
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (*p == '-') {	/* a range "a-b" */
+			p++;
+			while (*p == ' ' || *p == '\t')
+				p++;
+			b = parse_uint(&p);
+			if (b < a || (size_t)b > count) {
+				ok = 0;
+				break;
+			}
+		}
+		for (long i = a; i <= b; i++)
+			sel[i - 1] = 1;
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (*p == ',') {
+			p++;
+			continue;
+		}
+		if (*p == '\0')
+			break;
+		ok = 0;	/* unexpected trailing junk */
+	}
+
+	if (!ok) {
+		free(sel);
+		if (errbuf && errlen)
+			snprintf(errbuf, errlen,
+				 "bad --episodes spec '%s' (1-based, 1-%zu)",
+				 spec, count);
+		return -1;
+	}
+
+	size_t nsel = 0;
+	for (size_t i = 0; i < count; i++)
+		if (sel[i])
+			nsel++;
+	if (nsel == 0) {	/* e.g. an empty/all-whitespace spec */
+		free(sel);
+		if (errbuf && errlen)
+			snprintf(errbuf, errlen, "empty --episodes selection");
+		return -1;
+	}
+
+	*out_sel = sel;
+	*out_nsel = nsel;
+	return 0;
+}
+
+/* Resolve every raw[i] relative->absolute against `base`, dedup exact
+ * duplicates preserving first-seen order, and store the malloc'd result array
+ * in *urls with its count in *n. Returns 0 on success, -1 on OOM (outputs left
+ * untouched on failure). */
+static int
+resolve_dedup_list(const char *base, char **raw, size_t nraw,
+		   char ***urls, size_t *n)
+{
+	char **out = calloc(nraw, sizeof(*out));
+	if (!out)
+		return -1;
+	size_t nout = 0;
+	for (size_t i = 0; i < nraw; i++) {
+		char *a = extractor_resolve_url(base ? base : "", raw[i]);
+		if (!a) {
+			extractor_free_urls(out, nout);
+			return -1;
+		}
+		int dup = 0;
+		for (size_t j = 0; j < nout; j++)
+			if (strcmp(out[j], a) == 0) {
+				dup = 1;
+				break;
+			}
+		if (dup)
+			free(a);
+		else
+			out[nout++] = a;
+	}
+	*urls = out;
+	*n = nout;
+	return 0;
+}
+
+int
+extractor_list_episodes(const extractor_t *ex, const char *page_url,
+			extractor_fetch_fn fetch, void *userdata,
+			char ***urls, size_t *n, char **err)
+{
+	if (urls)
+		*urls = NULL;
+	if (n)
+		*n = 0;
+	if (err)
+		*err = NULL;
+	if (!ex || !page_url || !urls || !n)
+		return -1;
+
+	ext_store_t st;
+	memset(&st, 0, sizeof(st));
+
+	/* The builtin {url} is the series page being listed. */
+	char *urlcopy = ext_strdup(page_url);
+	if (!urlcopy) {
+		ext_set_err(err, ex->path, 0, "out of memory");
+		return -1;
+	}
+	if (store_set(&st, "url", urlcopy) < 0) {
+		ext_set_err(err, ex->path, 0, "variable store full");
+		store_free(&st);
+		return -1;
+	}
+
+	int ret = -1;
+	char **raw = NULL;	/* captured (possibly relative) list items */
+	size_t nraw = 0;
+
+	/* Evaluate var/get directives up to the first 'list', then capture it.
+	 * Anything after the list (the per-episode pipeline) is not run here. */
+	for (size_t i = 0; i < ex->ndirectives; i++) {
+		const ext_directive_t *d = &ex->directives[i];
+
+		if (d->kind == EXT_DIR_LIST) {
+			const char *src = store_get(&st, d->source,
+						    strlen(d->source));
+			if (!src) {
+				ext_set_err(err, ex->path, 0,
+					    "list '%s': undefined source '%s'",
+					    d->name, d->source);
+				goto done;
+			}
+			char *cerr = NULL;
+			int rc = regex_capture_all(d->arg, src,
+						   EXTRACTOR_MAX_EPISODES,
+						   &raw, &nraw, &cerr);
+			if (rc < 0) {
+				if (err)
+					*err = cerr;
+				else
+					free(cerr);
+				goto done;
+			}
+			if (nraw == 0) {
+				ext_set_err(err, ex->path, 0,
+					    "list '%s': regex /%s/ matched no items in source '%s'",
+					    d->name, d->arg, d->source);
+				goto done;
+			}
+			break;	/* one 'list' per config; stop at the first */
+		} else if (d->kind == EXT_DIR_VAR) {
+			const char *src = store_get(&st, d->source,
+						    strlen(d->source));
+			if (!src) {
+				ext_set_err(err, ex->path, 0,
+					    "var '%s': undefined source '%s'",
+					    d->name, d->source);
+				goto done;
+			}
+			char *cap = NULL;
+			int r = regex_capture1(d->arg, src, &cap, err);
+			if (r < 0)
+				goto done;
+			if (r == 0) {
+				ext_set_err(err, ex->path, 0,
+					    "var '%s': regex /%s/ did not match source '%s'",
+					    d->name, d->arg, d->source);
+				goto done;
+			}
+			if (store_set(&st, d->name, cap) < 0) {
+				ext_set_err(err, ex->path, 0,
+					    "var '%s': store full", d->name);
+				goto done;
+			}
+		} else if (d->kind == EXT_DIR_GET) {
+			if (!fetch) {
+				ext_set_err(err, ex->path, 0,
+					    "get '%s': no HTTP fetcher available",
+					    d->name);
+				goto done;
+			}
+			char *url = interpolate(d->arg, &st, err);
+			if (!url)
+				goto done;
+			const char *base = store_get(&st, "url", 3);
+			char *absurl = extractor_resolve_url(base ? base : "",
+							     url);
+			free(url);
+			if (!absurl) {
+				ext_set_err(err, ex->path, 0,
+					    "get '%s': out of memory", d->name);
+				goto done;
+			}
+
+			ext_header_t hdrs[EXTRACTOR_MAX_HEADERS];
+			size_t nh = 0;
+			int hdr_err = 0;
+			for (size_t h = 0; h < d->nheaders; h++) {
+				char *hv = interpolate(d->headers[h].val, &st,
+						       err);
+				if (!hv) {
+					hdr_err = 1;
+					break;
+				}
+				hdrs[nh].key = d->headers[h].key;	/* borrow */
+				hdrs[nh].val = hv;			/* owned */
+				nh++;
+			}
+			if (hdr_err) {
+				for (size_t h = 0; h < nh; h++)
+					free(hdrs[h].val);
+				free(absurl);
+				goto done;
+			}
+
+			char *body = NULL;
+			int fr = fetch(absurl, hdrs, nh, &body, userdata);
+			for (size_t h = 0; h < nh; h++)
+				free(hdrs[h].val);
+			if (fr < 0 || !body) {
+				free(body);
+				ext_set_err(err, ex->path, 0,
+					    "get '%s': fetch failed for %s",
+					    d->name, absurl);
+				free(absurl);
+				goto done;
+			}
+			free(absurl);
+			if (store_set(&st, d->name, body) < 0) {
+				ext_set_err(err, ex->path, 0,
+					    "get '%s': store full", d->name);
+				goto done;
+			}
+		}
+		/* EXT_DIR_OUTPUT before the list is ignored in series listing. */
+	}
+
+	if (!raw) {	/* no 'list' directive present */
+		ext_set_err(err, ex->path, 0, "config has no 'list' directive");
+		goto done;
+	}
+
+	/* Resolve relative->absolute against the series page and dedup. */
+	if (resolve_dedup_list(store_get(&st, "url", 3), raw, nraw,
+			       urls, n) < 0) {
+		ext_set_err(err, ex->path, 0, "out of memory");
+		goto done;
+	}
+	ret = 0;
+
+ done:
+	extractor_free_urls(raw, nraw);
 	store_free(&st);
 	return ret;
 }
@@ -1109,6 +1524,97 @@ extractor_resolve(const char *page_url, const char *force_name,
 	}
 	*out_media_url = media;
 	return 1;
+}
+
+int
+extractor_resolve_series(const char *page_url, const char *force_name,
+			 extractor_fetch_fn fetch, void *userdata,
+			 char ***urls, size_t *n)
+{
+	if (urls)
+		*urls = NULL;
+	if (n)
+		*n = 0;
+	if (!page_url || !urls || !n)
+		return -1;
+
+	extractor_t *ex = discover(page_url, force_name);
+	if (!ex) {
+		if (force_name) {
+			fprintf(stderr,
+				"flux: no extractor named '%s' found\n",
+				force_name);
+			return -1;
+		}
+		return 0;	/* no config matched */
+	}
+
+	if (!extractor_has_list(ex)) {	/* matched, but a single-media config */
+		extractor_free(ex);
+		return 0;
+	}
+
+	char *err = NULL;
+	char **list = NULL;
+	size_t nlist = 0;
+	int r = extractor_list_episodes(ex, page_url, fetch, userdata,
+					&list, &nlist, &err);
+	extractor_free(ex);
+	if (r < 0) {
+		if (err) {
+			fprintf(stderr, "flux: extractor: %s\n", err);
+			free(err);
+		} else {
+			fprintf(stderr, "flux: extractor: series listing failed\n");
+		}
+		return -1;
+	}
+
+	*urls = list;
+	*n = nlist;
+	return 1;
+}
+
+int
+extractor_run_series_episode(const char *page_url, const char *episode_url,
+			     const char *force_name,
+			     extractor_fetch_fn fetch, void *userdata,
+			     char **out_media_url)
+{
+	if (out_media_url)
+		*out_media_url = NULL;
+	if (!page_url || !episode_url || !out_media_url)
+		return -1;
+
+	/* Discover by the SERIES page URL: episode URLs typically don't match
+	 * the series `match`, but they share the same config and pipeline. */
+	extractor_t *ex = discover(page_url, force_name);
+	if (!ex) {
+		if (force_name)
+			fprintf(stderr,
+				"flux: no extractor named '%s' found\n",
+				force_name);
+		else
+			fprintf(stderr, "flux: no extractor matched %s\n",
+				page_url);
+		return -1;
+	}
+
+	char *err = NULL;
+	char *media = NULL;
+	int r = extractor_run(ex, episode_url, fetch, userdata, &media, &err);
+	extractor_free(ex);
+	if (r < 0) {
+		if (err) {
+			fprintf(stderr, "flux: extractor: %s\n", err);
+			free(err);
+		} else {
+			fprintf(stderr, "flux: extractor failed\n");
+		}
+		return -1;
+	}
+	*out_media_url = media;
+	return 0;
 }
 
 /* ---- --extract-list --------------------------------------------------- */

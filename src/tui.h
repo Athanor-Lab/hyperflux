@@ -63,4 +63,22 @@ typedef struct {
  * on every exit path including signals and errors. */
 int tui_select_one(const char *title, const tui_item_t *items, size_t n);
 
+/* Present a full-screen multi-select menu of `n` items under `title`. Each item
+ * starts selected if preselect && preselect[i] is non-zero (preselect may be
+ * NULL = none preselected). Space toggles the item under the cursor, 'a' toggles
+ * all, Enter confirms, q / Esc / Ctrl-C cancels.
+ *
+ * On confirm: returns the number of chosen items (>= 0) and, if > 0, stores a
+ * malloc'd array of the chosen 0-based indices in *out_idx (caller frees). Enter
+ * with nothing selected returns 0 with *out_idx == NULL.
+ *
+ * On cancel returns -1 with *out_idx == NULL. On allocation failure returns -2.
+ *
+ * Non-TTY / TERM=dumb falls back to a numbered line prompt accepting an
+ * --episodes-style spec ("1,3-5,8" or "all"). The raw-mode terminal is always
+ * restored (alternate screen left, cursor shown) on every exit path including
+ * signals and errors, sharing tui_select_one's setup/restore discipline. */
+int tui_select_many(const char *title, const tui_item_t *items, size_t n,
+		    const unsigned char *preselect, size_t **out_idx);
+
 #endif				/* FLUX_TUI_H */
