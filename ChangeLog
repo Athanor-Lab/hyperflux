@@ -4,6 +4,23 @@ kept unchanged for the record, including their original author names.
 
 
 
+Version: 2.0.0, 2026-06-18
+
+  [ Hyperflux contributors ]
+
+* series: a 'list' config opens an interactive multi-select episode TUI with on-disk
+  status (missing pre-selected, 'a' selects all); batch download skips files already
+  present; episodes keep their remote filename; --all and --episodes select
+  non-interactively
+* tui: skills-styled multi-select (no ncurses) with windowed scrolling and no list
+  cap, wrapping-aware redraw, SIGWINCH-safe, terminal restored on every exit
+* extractor: interpolate {var} in var/list regex arguments (slug-anchored episode
+  lists); animeworld.conf is now a series config; epid charset accepts '-' and '_'
+* packaging: bundled extractor configs install active into
+  /usr/share/hyperflux/extractors (deb/rpm/apk and the native rpm spec)
+* scan: --extract-scan saves the generated config into the active user dir by
+  default; HTML no-match hint
+
 Version: 1.1.0, 2026-06-18
 
   [ Hyperflux contributors ]
