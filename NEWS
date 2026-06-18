@@ -1,3 +1,30 @@
+Hyperflux 2.0.0 (2026-06-18)
+============================
+
+Download a whole series, not just one file. Point flux at any episode page of a
+supported site and it opens an interactive picker listing every episode: the ones
+already on disk are ticked, the rest start selected, and one key selects them all.
+Confirm and flux downloads only what's missing, keeping each file under the same
+name it has on the site, so re-running later grabs just the new episodes.
+
+* The episode picker is a clean terminal UI: arrow keys or j/k to move, space to
+  toggle, "a" to select all, enter to download, q to quit. It scrolls through long
+  series with no cap and redraws cleanly when the terminal is resized.
+
+* Extractor configs now work out of the box: the bundled config installs active in a
+  system directory, so a fresh install resolves matching pages with no setup, and
+  "flux --extract-scan <url>" writes the config it generates straight into your
+  active config dir. A download that turns out to be a web page now hints you to run
+  --extract-scan instead of silently saving the HTML.
+
+* Config regexes can interpolate captured variables, which is what lets a config
+  enumerate a series' episodes.
+
+Everything from 1.x still applies: a page that matches no config is a normal direct
+download, HLS streams are fetched in parallel and assembled, and packages are on the
+apt/dnf/apk Cloudsmith repositories.
+
+
 Hyperflux 1.1.0 (2026-06-18)
 ============================
 
