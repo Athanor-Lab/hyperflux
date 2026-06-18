@@ -88,4 +88,18 @@ void http_decode(char *s);
 int http_fetch(conf_t *conf, const char *url, const char *const *headers,
 	       size_t nheaders, abuf_t *body);
 
+/* Like http_fetch, but also reports the exact body byte count via *out_len
+ * (may be NULL). Use this for binary bodies (HLS segments, AES keys) whose
+ * content can embed NUL bytes, where strlen() of body->p underreports. Body is
+ * capped at 16 MiB; use http_fetch_max for larger media bodies. */
+int http_fetch_len(conf_t *conf, const char *url, const char *const *headers,
+		   size_t nheaders, abuf_t *body, size_t *out_len);
+
+/* Like http_fetch_len, but caps the body at `max_body` bytes instead of the
+ * 16 MiB default. Use for media segments that legitimately exceed 16 MiB
+ * (high-bitrate 1080p, single-file VOD). `max_body` must be > 0. */
+int http_fetch_max(conf_t *conf, const char *url, const char *const *headers,
+		   size_t nheaders, abuf_t *body, size_t *out_len,
+		   size_t max_body);
+
 #endif				/* FLUX_HTTP_H */

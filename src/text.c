@@ -52,6 +52,9 @@
 #include "flux.h"
 #include "url_glob.h"
 #include "extractor.h"
+#ifdef HAVE_SSL
+#include "hls.h"
+#endif
 
 
 static void stop(int signal);
@@ -75,6 +78,8 @@ int run = 1;
 #define MAX_REDIR_OPT	256
 #define EXTRACT_OPT	257
 #define EXTRACT_LIST_OPT	258
+#define QUALITY_OPT	259
+#define MUX_OPT		260
 
 #ifdef NOGETOPTLONG
 #define getopt_long(a, b, c, d, e) getopt(a, b, c)
@@ -102,6 +107,8 @@ static struct option flux_options[] = {
 	{"timeout",         1,      NULL, 'T'},
 	{"extract",         1,      NULL, EXTRACT_OPT},
 	{"extract-list",    0,      NULL, EXTRACT_LIST_OPT},
+	{"quality",         1,      NULL, QUALITY_OPT},
+	{"mux",             1,      NULL, MUX_OPT},
 	{NULL,              0,      NULL, 0}
 };
 #endif
@@ -170,6 +177,8 @@ main(int argc, char *argv[])
 	char *stdin_url = NULL;
 	const char *single = NULL;
 	const char *extract_name = NULL;	/* --extract <name> override */
+	const char *hls_quality = NULL;		/* --quality best|worst|<height> */
+	const char *hls_mux = NULL;		/* --mux mp4|ts */
 
 	fn[0] = 0;
 
@@ -294,6 +303,19 @@ main(int argc, char *argv[])
 			extractor_list();
 			ret = 0;
 			goto free_conf;
+		case QUALITY_OPT:
+			hls_quality = optarg;
+			break;
+		case MUX_OPT:
+			if (strcmp(optarg, "mp4") != 0 &&
+			    strcmp(optarg, "ts") != 0) {
+				fprintf(stderr,
+					_("Invalid --mux value '%s' (use mp4 or ts).\n"),
+					optarg);
+				goto free_conf;
+			}
+			hls_mux = optarg;
+			break;
 		default:
 			print_help();
 			goto free_conf;
@@ -346,6 +368,11 @@ main(int argc, char *argv[])
 			goto free_conf;
 		}
 	}
+
+#ifndef HAVE_SSL
+	(void)hls_quality;
+	(void)hls_mux;	/* HLS dispatch is compiled only with SSL */
+#endif
 
 	if (do_search) {
 		const char *url = single ? single : argv[optind];
@@ -403,6 +430,18 @@ main(int argc, char *argv[])
 		if (resolved && strcmp(resolved, single) != 0 && conf->verbose > 0)
 			printf(_("Extracted media URL: %s\n"), resolved);
 		const char *src_url = resolved ? resolved : single;
+
+#ifdef HAVE_SSL
+		/* HLS playlist: hand off to the segment downloader and skip the
+		 * normal glob/range path entirely. */
+		if (hls_is_playlist_url(src_url)) {
+			int hr = hls_download(conf, src_url, fn, hls_quality,
+					      hls_mux);
+			free(resolved);
+			ret = hr == 0 ? 0 : 1;
+			goto cleanup;
+		}
+#endif
 
 		if (url_glob(src_url, MAX_STRING, &items, &n, &ncaps) < 0) {
 			fprintf(stderr,
@@ -968,6 +1007,8 @@ print_help(void)
 		 "--timeout=x\t\t-T x\tSet I/O and connection timeout\n"
 		 "--extract=name\t\t\tForce a named extractor config\n"
 		 "--extract-list\t\t\tList discovered extractor configs\n"
+		 "--quality=q\t\t\tHLS variant: best|worst|<height> (default best)\n"
+		 "--mux=c\t\t\t\tHLS container: mp4|ts (default mp4 if ffmpeg)\n"
 		 "--version\t\t-V\tVersion information\n"
 		 "\n"
 		 "Visit https://example.invalid/hyperflux/issues to report bugs\n"));
