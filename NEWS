@@ -1,6 +1,43 @@
-Hyperflux is a fork of Axel. History before 1.0.0 belongs to Axel; the
-entries below are Axel's and are kept as-is for the record.
+Hyperflux 1.1.0 (2026-06-18)
+============================
 
-Since 2.10 version, Axel supports HTTPS/FTPS downloads.
+Download media from a web page, not just a direct file URL. Point flux at a
+page and, when a user-written extractor config matches the domain, it resolves
+the real media URL by running a small pipeline of HTTP requests and regex
+captures, then downloads it with the usual multiple connections. A page that
+matches no config falls through to the normal direct download, unchanged.
 
-Enjoy!
+* HLS (.m3u8) streams: segments are fetched in parallel, decrypted (AES-128),
+  assembled, and remuxed to MP4 when ffmpeg is present (otherwise kept as a
+  .ts file). Choose quality with --quality and the container with --mux.
+
+* Config generator: "flux --extract-scan <url>" inspects a page, scores the
+  media candidates against ads, and writes a commented starter config. An
+  interactive picker steps in when several candidates compete; --yes takes the
+  best one without asking.
+
+* Series: a config can list the episodes of a show. flux opens a multi-select
+  screen, or takes --all or --episodes 1,3-5, and downloads the selection,
+  carrying on past any episode that fails.
+
+Extractor configs live in ~/.config/hyperflux/extractors/ as plain text and run
+arbitrary HTTP requests, so review one from someone else before using it.
+JavaScript-signed and DRM-protected sites are out of scope.
+
+You can also install and update Hyperflux from signed apt, dnf and apk
+repositories on Cloudsmith now, instead of downloading a package each time; the
+README has the one-line setup per distribution.
+
+
+Hyperflux 1.0.0 (2026-06-15)
+============================
+
+First Hyperflux release, forked from Axel: the command is "flux" and the
+packages are "hyperflux", with URL range and list expansion ({a,b,c} and
+[01-09]) and native deb, rpm and apk packaging.
+
+
+----
+
+Hyperflux is a fork of Axel. History before 1.0.0 belongs to Axel.
+Since Axel 2.10, HTTPS/FTPS downloads are supported. Enjoy!

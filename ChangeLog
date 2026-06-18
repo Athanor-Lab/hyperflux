@@ -4,6 +4,34 @@ kept unchanged for the record, including their original author names.
 
 
 
+Version: 1.1.0, 2026-06-18
+
+  [ Hyperflux contributors ]
+
+* extractor: config-driven media extraction wired into the base flux command
+  (var/get/output pipeline, POSIX-ERE capture, {var} interpolation, domain
+  auto-match); --extract, --extract-list
+* hls: download .m3u8 streams (master/media parse, variant selection, parallel
+  AES-128 segments via OpenSSL, assembly, optional ffmpeg remux); --quality, --mux
+* scan: "flux --extract-scan" page scanner with ad-vs-content scoring and
+  commented config generation; self-contained TUI candidate picker; --yes
+* series: "list" directive, multi-select TUI, batch episode download; --all,
+  --episodes
+* http: http_fetch/http_fetch_max body fetch and http_probe_len HEAD size probe;
+  http_get refactored over http_request
+* packaging: publish .deb/.rpm/.apk to the public Cloudsmith repository on each
+  release; documented apt/dnf/apk repo install in the README
+* ci: one-click release flow (Prepare release -> version-bump PR -> tag ->
+  GitHub Release + Cloudsmith)
+
+Version: 1.0.0, 2026-06-15
+
+  [ Hyperflux contributors ]
+
+* Fork of Axel rebranded to the flux command and hyperflux packages
+* url_glob: URL range and list expansion ({a,b,c}, [01-09])
+* packaging: native deb, rpm and apk packages plus Gentoo ebuild, AUR, Homebrew tap
+
 Version: 2.17.14, 2024-04-07
 
   [ Ismael Luceno ]

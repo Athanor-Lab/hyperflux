@@ -155,11 +155,27 @@ jobs:
           ( cd artifacts && sha256sum -- * > SHA256SUMS )
           cat artifacts/SHA256SUMS
 
+      - name: Build release notes from NEWS
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Slice this version's section out of NEWS for the Release body.
+          awk -v ver="$VERSION" '
+            /^Hyperflux [0-9]/ { if (started) exit; if ($2 == ver) started = 1 }
+            started { print }
+          ' NEWS > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            printf "Hyperflux %s\n" "$VERSION" > release_notes.md
+          fi
+          cat release_notes.md
+
       - name: Create GitHub Release and upload assets
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
+          body_path: release_notes.md
           draft: false
           prerelease: false
           fail_on_unmatched_files: true
