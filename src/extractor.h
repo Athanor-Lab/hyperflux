@@ -193,6 +193,13 @@ int extractor_resolve(const char *page_url, const char *force_name,
  * Returns 0 on success. */
 int extractor_list(void);
 
+/* Fill `dst` with the user extractor config dir ($XDG_CONFIG_HOME/hyperflux/
+ * extractors or ~/.config/hyperflux/extractors), the first directory discovery
+ * scans. When `create` is non-zero the full path is created (mkdir -p, 0700).
+ * Returns 1 on success, 0 if no home is known, the path overflows `dst`, or a
+ * directory could not be created. */
+int extractor_user_dir(char *dst, size_t len, int create);
+
 /* Resolve a possibly-relative `ref` against absolute `base` into a malloc'd
  * absolute URL. Returns NULL on allocation failure or invalid input. Exposed
  * for unit testing. */

@@ -49,6 +49,7 @@
 
 #include "config.h"
 #include <sys/ioctl.h>
+#include <strings.h>		/* strncasecmp (file_looks_like_html) */
 #include "flux.h"
 #include "url_glob.h"
 #include "extractor.h"
@@ -69,7 +70,7 @@ static void print_version(void);
 static void print_version_info(void);
 static int get_term_width(void);
 static int download_one(conf_t *conf, const search_t *urls, int count,
-			const char *out_name);
+			const char *out_name, char *out_final, size_t final_len);
 static int download_media_url(conf_t *conf, const char *media_url,
 			      const char *out_name, const char *hls_quality,
 			      const char *hls_mux);
@@ -83,6 +84,7 @@ static int is_directory(const char *p);
 static int has_numbered_ref(const char *tpl, size_t ncaps);
 static void resolve_outname(char *dst, size_t dlen, const char *tpl,
 			    const url_glob_t *it, size_t ncaps);
+static int file_looks_like_html(const char *path);
 
 int run = 1;
 
@@ -208,9 +210,14 @@ extract_size_probe(const char *url, long long *out_size, void *userdata)
 }
 
 /* Run --extract-scan: scan `page_url`, optionally disambiguate via the TUI, and
- * emit a generated config to `out_file` (NULL/empty -> stdout). `auto_yes`
- * skips the TUI and picks the top-ranked candidate. Returns 0 on success, 1 on
- * any error (matching the caller's exit-code convention). */
+ * emit a generated config. Output destination:
+ *   - no -o (out_file NULL/empty): SAVE active into the user extractor dir as
+ *     <user-dir>/<name>.conf (the dir is created). Refuses to overwrite an
+ *     existing auto-path so a hand-tuned config is never clobbered.
+ *   - '-o -' : write to stdout (the legacy default).
+ *   - '-o FILE': write to FILE (explicit override, may overwrite).
+ * `auto_yes` skips the TUI and picks the top-ranked candidate. Returns 0 on
+ * success, 1 on any error (matching the caller's exit-code convention). */
 static int
 run_extract_scan(conf_t *conf, const char *page_url, const char *out_file,
 		 int auto_yes)
@@ -282,13 +289,54 @@ run_extract_scan(conf_t *conf, const char *page_url, const char *out_file,
 	 * silently guess. tui_select_one's fallback already handled the prompt
 	 * above; if it returned a valid index we proceed. */
 
+	/* Resolve the output destination. The auto-save path (no -o) lands in the
+	 * active user dir; '-o -' is stdout; '-o FILE' is an explicit override. */
+	int to_stdout = (out_file && strcmp(out_file, "-") == 0);
+	int explicit_file = (out_file && *out_file && !to_stdout);
+
+	char autopath[MAX_STRING];
+	const char *dest = out_file;	/* path used for messages (explicit case) */
+
+	if (!to_stdout && !explicit_file) {
+		/* Default: save active into <user-dir>/<name>.conf, creating it. */
+		char dir[4096];
+		if (!extractor_user_dir(dir, sizeof(dir), 1)) {
+			fprintf(stderr,
+				_("flux: cannot determine or create the user extractor directory.\n"));
+			scan_result_free(r);
+			return 1;
+		}
+		char name[128];
+		if (scan_config_name(r, name, sizeof(name)) != 0) {
+			fprintf(stderr, _("flux: cannot derive a config name.\n"));
+			scan_result_free(r);
+			return 1;
+		}
+		int n = snprintf(autopath, sizeof(autopath), "%s/%s.conf",
+				 dir, name);
+		if (n <= 0 || (size_t)n >= sizeof(autopath)) {
+			fprintf(stderr, _("flux: extractor config path too long.\n"));
+			scan_result_free(r);
+			return 1;
+		}
+		/* Never silently clobber a hand-tuned config on the auto-path. */
+		if (access(autopath, F_OK) == 0) {
+			fprintf(stderr,
+				_("flux: %s already exists; pass -o to overwrite or choose a path.\n"),
+				autopath);
+			scan_result_free(r);
+			return 1;
+		}
+		dest = autopath;
+	}
+
 	FILE *out = stdout;
 	int close_out = 0;
-	if (out_file && *out_file) {
-		out = fopen(out_file, "w");
+	if (!to_stdout) {
+		out = fopen(dest, "w");
 		if (!out) {
 			fprintf(stderr, _("flux: cannot write config to %s: %s\n"),
-				out_file, strerror(errno));
+				dest, strerror(errno));
 			scan_result_free(r);
 			return 1;
 		}
@@ -308,9 +356,15 @@ run_extract_scan(conf_t *conf, const char *page_url, const char *out_file,
 		fprintf(stderr, _("flux: failed to write generated config.\n"));
 		return 1;
 	}
-	if (close_out && conf->verbose >= 0)
-		fprintf(stderr, _("flux: wrote extractor config to %s\n"),
-			out_file);
+	if (close_out && conf->verbose >= 0) {
+		if (explicit_file)
+			fprintf(stderr,
+				_("flux: wrote extractor config to %s\n"), dest);
+		else
+			fprintf(stderr,
+				_("flux: saved active extractor config to %s\n"),
+				dest);
+	}
 	return 0;
 }
 
@@ -593,7 +647,7 @@ main(int argc, char *argv[])
 				       search[i].speed);
 			printf("\n");
 		}
-		ret = download_one(conf, search, j, fn);
+		ret = download_one(conf, search, j, fn, NULL, 0);
 		free(search);
 	} else if (single != NULL) {
 		url_glob_t *items = NULL;
@@ -692,6 +746,14 @@ main(int argc, char *argv[])
 			goto cleanup;
 		}
 
+		/* Best-effort hint: when a lone URL matched no extractor config and
+		 * the fetched bytes are an HTML page, the user likely wanted it
+		 * extracted. Only meaningful for the single-URL no-match case; the
+		 * resolved on-disk path is captured to sniff it after download. */
+		int want_html_hint = (n == 1 && er == 0);
+		char final_path[MAX_STRING];
+		final_path[0] = '\0';
+
 		int failures = 0;
 		size_t done = 0;
 		for (size_t k = 0; k < n && run; k++) {
@@ -707,7 +769,9 @@ main(int argc, char *argv[])
 			resolve_outname(outname, sizeof(outname), fn,
 					&items[k], ncaps);
 
-			int r = download_one(conf, &one, 1, outname);
+			int r = download_one(conf, &one, 1, outname,
+					     want_html_hint ? final_path : NULL,
+					     want_html_hint ? sizeof(final_path) : 0);
 			if (r == 0)
 				done++;
 			else
@@ -717,6 +781,16 @@ main(int argc, char *argv[])
 		if (n > 1)
 			printf(_("\n%zu of %zu downloads completed.\n"),
 			       done, n);
+
+		/* Hint after a successful no-match single download whose bytes look
+		 * like HTML: the user probably wanted extraction, not the page. */
+		if (want_html_hint && run && !failures && final_path[0]
+		    && file_looks_like_html(final_path))
+			fprintf(stderr,
+				_("flux: %s looks like a web page, not a media file; "
+				  "no extractor config matched. Try: flux --extract-scan \"%s\"\n"),
+				single, single);
+
 		/* Mirror Hyperflux's exit codes: 2 on interrupt, 1 on any failure. */
 		if (!run)
 			ret = 2;
@@ -736,7 +810,7 @@ main(int argc, char *argv[])
 				sizeof(search[i].url));
 			// FIXME check url here
 		}
-		ret = download_one(conf, search, argc - optind, fn);
+		ret = download_one(conf, search, argc - optind, fn, NULL, 0);
 		free(search);
 	}
 
@@ -751,9 +825,12 @@ main(int argc, char *argv[])
 /* Run a single download (one file, possibly multi-connection / multi-mirror).
  * urls[0].url is the displayed URL; out_name is a filename template (may be
  * empty, a directory, or contain #N references already resolved by the caller).
- * Returns 0 if completed, 2 if interrupted/incomplete, 1 on setup error. */
+ * When out_final is non-NULL the final on-disk path is copied into it (capacity
+ * final_len) once the filename is resolved, so a caller can inspect the saved
+ * file. Returns 0 if completed, 2 if interrupted/incomplete, 1 on setup error. */
 static int
-download_one(conf_t *conf, const search_t *urls, int count, const char *out_name)
+download_one(conf_t *conf, const search_t *urls, int count, const char *out_name,
+	     char *out_final, size_t final_len)
 {
 	flux_t *flux;
 	int ret = 1;
@@ -761,6 +838,9 @@ download_one(conf_t *conf, const search_t *urls, int count, const char *out_name
 	/* flux_new/flux_divide rotate the shared interfaces list; restore the
 	 * head on return so conf_free releases the original node. */
 	flux_if_t *saved_if = conf->interfaces;
+
+	if (out_final && final_len)
+		out_final[0] = '\0';
 
 	if (conf->progress_style != FLUX_PROGRESS_STYLE_PERCENTAGE)
 		printf(_("Initializing download: %s\n"), urls[0].url);
@@ -826,6 +906,10 @@ download_one(conf_t *conf, const search_t *urls, int count, const char *out_name
 				 ".%i", i);
 		}
 	}
+
+	/* Report the resolved on-disk path so a caller can inspect the file. */
+	if (out_final && final_len)
+		strlcpy(out_final, flux->filename, final_len);
 
 	if (!flux_open(flux)) {
 		print_messages(flux);
@@ -921,7 +1005,7 @@ download_media_url(conf_t *conf, const char *media_url, const char *out_name,
 	search_t one;
 	memset(&one, 0, sizeof(one));
 	strlcpy(one.url, media_url, sizeof(one.url));
-	return download_one(conf, &one, 1, out_name);
+	return download_one(conf, &one, 1, out_name, NULL, 0);
 }
 
 /* Derive a unique, safe leaf filename for episode #num from its media URL.
@@ -1231,6 +1315,42 @@ resolve_outname(char *dst, size_t dlen, const char *tpl,
 	dst[o] = 0;
 }
 
+/* Best-effort: 1 if the file at `path` begins with an HTML signature. Reads a
+ * small prefix, skips a UTF-8 BOM and leading whitespace, and matches a
+ * case-insensitive "<!doctype html" or "<html" (start tag or with attributes).
+ * Any read error or non-HTML prefix returns 0. */
+static int
+file_looks_like_html(const char *path)
+{
+	FILE *fp = fopen(path, "rb");
+	if (!fp)
+		return 0;
+
+	unsigned char raw[512];
+	size_t got = fread(raw, 1, sizeof(raw) - 1, fp);
+	fclose(fp);
+	if (got == 0)
+		return 0;
+	raw[got] = '\0';
+
+	const char *p = (const char *)raw;
+	const char *end = (const char *)raw + got;
+	if (got >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF)
+		p += 3;				/* skip UTF-8 BOM */
+	while (p < end && isspace((unsigned char)*p))
+		p++;
+
+	size_t avail = (size_t)(end - p);
+	if (avail >= 14 && strncasecmp(p, "<!doctype html", 14) == 0)
+		return 1;
+	/* "<html" followed by a tag terminator or attribute whitespace. */
+	if (avail >= 5 && strncasecmp(p, "<html", 5) == 0
+	    && (p[5] == '>' || p[5] == ' ' || p[5] == '\t' || p[5] == '\n'
+		|| p[5] == '\r'))
+		return 1;
+	return 0;
+}
+
 /* SIGINT/SIGTERM handler */
 void
 stop(int signal)
@@ -1491,7 +1611,7 @@ print_help(void)
 		 "--timeout=x\t\t-T x\tSet I/O and connection timeout\n"
 		 "--extract=name\t\t\tForce a named extractor config\n"
 		 "--extract-list\t\t\tList discovered extractor configs\n"
-		 "--extract-scan=url\t\tScan a page and emit a starter config\n"
+		 "--extract-scan=url\t\tScan a page and save an active config (-o FILE to a path, -o - to stdout)\n"
 		 "--yes\t\t\t\tNon-interactive: auto-pick the top candidate\n"
 		 "--all\t\t\t\tSeries: download every episode (no prompt)\n"
 		 "--episodes=spec\t\t\tSeries: pick episodes, e.g. 1,3-5,8 (1-based)\n"

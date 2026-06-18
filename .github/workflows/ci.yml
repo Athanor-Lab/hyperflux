@@ -333,12 +333,55 @@ jobs:
           grep -qF "output ${want}" "${cfg}" \
             || { echo "output is not the resolved media URL" >&2; exit 1; }
 
-          # The same scan to stdout (no -o) must also contain the output line.
+          # '-o -' writes the config to stdout (the legacy default).
           "${flux}" --extract-scan "http://127.0.0.1:${port}/watch.html" --yes \
-            | grep -qF "output ${want}" \
+            -o - | grep -qF "output ${want}" \
             || { echo "stdout config missing output" >&2; exit 1; }
 
-          echo "Scan e2e OK: --extract-scan --yes emitted a valid config"
+          # Default (no -o): SAVE active into the user extractor dir and confirm
+          # a later --extract-list shows it (item 2: active by default).
+          udir="${workdir}/cfg"
+          export XDG_CONFIG_HOME="${udir}"
+          "${flux}" --extract-scan "http://127.0.0.1:${port}/watch.html" --yes \
+            2> "${workdir}/save.err"
+          saved="${udir}/hyperflux/extractors/site.conf"
+          test -f "${saved}" \
+            || { echo "default scan did not save into the user dir" >&2; \
+                 cat "${workdir}/save.err" >&2; exit 1; }
+          grep -qF "output ${want}" "${saved}" \
+            || { echo "saved config missing resolved output" >&2; exit 1; }
+          "${flux}" --extract-list | grep -qF "${saved}" \
+            || { echo "saved config is not active (not listed)" >&2; exit 1; }
+          # Re-running must refuse to clobber the hand-tunable auto-path.
+          if "${flux}" --extract-scan "http://127.0.0.1:${port}/watch.html" \
+               --yes 2>/dev/null; then
+            echo "re-scan clobbered an existing config" >&2; exit 1
+          fi
+          unset XDG_CONFIG_HOME
+
+          echo "Scan e2e OK: --extract-scan emits, saves active, refuses clobber"
+
+      - name: Install e2e (bundled extractor config ships active)
+        run: |
+          set -euo pipefail
+          # Item 1: 'make install' lands the example config in a discovery dir.
+          rm -rf stage
+          make install DESTDIR="$(pwd)/stage" prefix=/usr >/dev/null
+          test -f stage/usr/share/hyperflux/extractors/animeworld.conf \
+            || { echo "bundled config not installed to discovery dir" >&2; exit 1; }
+          # A user with no config of their own discovers the shipped one when it
+          # sits in a discovery dir (proven here via the user dir, the first one
+          # scanned; system dirs need root and are validated by the install path).
+          flux="${GITHUB_WORKSPACE}/flux"
+          udir="$(mktemp -d)"
+          mkdir -p "${udir}/hyperflux/extractors"
+          cp stage/usr/share/hyperflux/extractors/animeworld.conf \
+            "${udir}/hyperflux/extractors/"
+          XDG_CONFIG_HOME="${udir}" HOME="$(mktemp -d)" \
+            "${flux}" --extract-list | grep -q animeworld \
+            || { echo "shipped config not discovered" >&2; exit 1; }
+          rm -rf "${udir}"
+          echo "Install e2e OK: bundled config installs and is discoverable"
 
       - name: Series e2e (localhost --episodes / --all batch download)
         run: |

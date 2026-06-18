@@ -57,6 +57,10 @@ The installed command is "flux".
 %doc doc/fluxrc.example
 %{_bindir}/flux
 %{_mandir}/man1/flux.1*
+# Bundled extractor configs installed active into the discovery dir; match the
+# Makefile.am dist_extractors_DATA path so rpmbuild from source stays packaged.
+%dir %{_datadir}/hyperflux/extractors
+%{_datadir}/hyperflux/extractors/*.conf
 
 %changelog
 * Mon Jun 15 2026 xAlcahest <xAlcahest@users.noreply.github.com> - 1.0.0-1

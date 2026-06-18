@@ -871,3 +871,14 @@ scan_emit_config(const scan_result_t *r, int chosen, FILE *out)
 	free(host);
 	return 0;
 }
+
+int
+scan_config_name(const scan_result_t *r, char *dst, size_t len)
+{
+	if (!r || !dst || len == 0)
+		return -1;
+	char *host = url_host(r->page_url);	/* may be NULL: derive_name copes */
+	derive_name(host, dst, len);
+	free(host);
+	return 0;
+}

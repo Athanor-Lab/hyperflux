@@ -63,6 +63,13 @@ contents:
     dst: /usr/share/locale
     type: tree
 
+  # Bundled extractor configs, installed ACTIVE into a discovery dir so a fresh
+  # install resolves matching pages out of the box. Replicate the staged tree
+  # (type: tree) to keep each *.conf as its own file.
+  - src: stage/usr/share/hyperflux/extractors/
+    dst: /usr/share/hyperflux/extractors
+    type: tree
+
   # Example config shipped as documentation.
   - src: doc/fluxrc.example
     dst: /usr/share/doc/hyperflux/fluxrc.example
