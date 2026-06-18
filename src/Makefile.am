@@ -13,6 +13,8 @@ flux_SOURCES = \
 	src/conf.h \
 	src/conn.c \
 	src/conn.h \
+	src/extractor.c \
+	src/extractor.h \
 	src/ftp.c \
 	src/ftp.h \
 	src/hash.c \

@@ -51,6 +51,7 @@
 #include <sys/ioctl.h>
 #include "flux.h"
 #include "url_glob.h"
+#include "extractor.h"
 
 
 static void stop(int signal);
@@ -72,6 +73,8 @@ static void resolve_outname(char *dst, size_t dlen, const char *tpl,
 int run = 1;
 
 #define MAX_REDIR_OPT	256
+#define EXTRACT_OPT	257
+#define EXTRACT_LIST_OPT	258
 
 #ifdef NOGETOPTLONG
 #define getopt_long(a, b, c, d, e) getopt(a, b, c)
@@ -97,9 +100,54 @@ static struct option flux_options[] = {
 	{"header",          1,      NULL, 'H'},
 	{"user-agent",      1,      NULL, 'U'},
 	{"timeout",         1,      NULL, 'T'},
+	{"extract",         1,      NULL, EXTRACT_OPT},
+	{"extract-list",    0,      NULL, EXTRACT_LIST_OPT},
 	{NULL,              0,      NULL, 0}
 };
 #endif
+
+/* Adapter: bridge the extractor's fetch callback to http_fetch. userdata is the
+ * conf_t. Converts the K/V header array into "K: V" strings http_fetch wants. */
+static int
+extract_http_fetch(const char *url, const ext_header_t *headers,
+		   size_t nheaders, char **out_body, void *userdata)
+{
+	conf_t *conf = userdata;
+	abuf_t body[1] = { { NULL, 0 } };
+	char *hbuf[EXTRACTOR_MAX_HEADERS];
+	const char *hptr[EXTRACTOR_MAX_HEADERS];
+	size_t built = 0;
+	int ret = -1;
+
+	*out_body = NULL;
+	if (nheaders > EXTRACTOR_MAX_HEADERS)
+		return -1;
+
+	for (size_t i = 0; i < nheaders; i++) {
+		size_t need = strlen(headers[i].key) + 2 +
+			      strlen(headers[i].val) + 1;
+		hbuf[i] = malloc(need);
+		if (!hbuf[i])
+			goto cleanup;
+		snprintf(hbuf[i], need, "%s: %s", headers[i].key,
+			 headers[i].val);
+		hptr[i] = hbuf[i];
+		built++;
+	}
+
+	if (http_fetch(conf, url, hptr, nheaders, body) == 0 && body->p) {
+		*out_body = body->p;	/* hand ownership to the caller */
+		body->p = NULL;
+		ret = 0;
+	} else {
+		abuf_setup(body, ABUF_FREE);
+	}
+
+ cleanup:
+	for (size_t i = 0; i < built; i++)
+		free(hbuf[i]);
+	return ret;
+}
 
 /**
  * Unified percentage calculation for all progress indicators.
@@ -121,6 +169,7 @@ main(int argc, char *argv[])
 	int j, ret = 1;
 	char *stdin_url = NULL;
 	const char *single = NULL;
+	const char *extract_name = NULL;	/* --extract <name> override */
 
 	fn[0] = 0;
 
@@ -238,6 +287,13 @@ main(int argc, char *argv[])
 		case 'T':
 			conf->io_timeout = strtoul(optarg, NULL, 0);
 			break;
+		case EXTRACT_OPT:
+			extract_name = optarg;
+			break;
+		case EXTRACT_LIST_OPT:
+			extractor_list();
+			ret = 0;
+			goto free_conf;
 		default:
 			print_help();
 			goto free_conf;
@@ -333,13 +389,29 @@ main(int argc, char *argv[])
 	} else if (single != NULL) {
 		url_glob_t *items = NULL;
 		size_t n = 0, ncaps = 0;
+		char *resolved = NULL;
 
-		if (url_glob(single, MAX_STRING, &items, &n, &ncaps) < 0) {
+		/* Resolve a web-page URL to a direct media URL via extractor
+		 * configs. No match -> resolved == copy of single (passthrough).
+		 * On error abort; on success download the resolved URL. */
+		int er = extractor_resolve(single, extract_name,
+					   extract_http_fetch, conf, &resolved);
+		if (er < 0) {
+			ret = 1;
+			goto cleanup;
+		}
+		if (resolved && strcmp(resolved, single) != 0 && conf->verbose > 0)
+			printf(_("Extracted media URL: %s\n"), resolved);
+		const char *src_url = resolved ? resolved : single;
+
+		if (url_glob(src_url, MAX_STRING, &items, &n, &ncaps) < 0) {
 			fprintf(stderr,
 				_("Invalid URL pattern, or too many URLs (max %d).\n"),
 				URL_GLOB_MAX_URLS);
+			free(resolved);
 			goto cleanup;
 		}
+		free(resolved);
 
 		/* Refuse to clobber one file with many distinct downloads */
 		if (n > 1 && *fn && !is_directory(fn)
@@ -384,6 +456,9 @@ main(int argc, char *argv[])
 			ret = failures ? 1 : 0;
 	} else {
 		/* Multiple distinct URLs: legacy mirror mode */
+		if (extract_name)
+			fprintf(stderr,
+				_("Warning: --extract is ignored with multiple URLs.\n"));
 		search = calloc(argc - optind, sizeof(search_t));
 		if (!search)
 			goto cleanup;
@@ -891,6 +966,8 @@ print_help(void)
 		 "--percentage\t\t-p\tPrint simple percentages instead of progress bar (0-100)\n"
 		 "--help\t\t\t-h\tThis information\n"
 		 "--timeout=x\t\t-T x\tSet I/O and connection timeout\n"
+		 "--extract=name\t\t\tForce a named extractor config\n"
+		 "--extract-list\t\t\tList discovered extractor configs\n"
 		 "--version\t\t-V\tVersion information\n"
 		 "\n"
 		 "Visit https://example.invalid/hyperflux/issues to report bugs\n"));
