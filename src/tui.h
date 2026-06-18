@@ -81,4 +81,42 @@ int tui_select_one(const char *title, const tui_item_t *items, size_t n);
 int tui_select_many(const char *title, const tui_item_t *items, size_t n,
 		    const unsigned char *preselect, size_t **out_idx);
 
+/* One row of the episode multi-select: a label (e.g. "1  ep01-foo.mp4"), an
+ * initial selected flag, and whether the file already exists on disk. */
+typedef struct {
+	const char *label;	/* borrowed, not owned */
+	unsigned char selected;	/* initial state (in); 1 = preselected */
+	unsigned char on_disk;	/* 1 = a matching file already exists */
+} tui_episode_t;
+
+/* Present a skills-styled episode multi-select under `message`. Items already on
+ * disk render with a green tick and start unselected; missing items start
+ * selected, so a plain Enter downloads exactly the missing episodes. Navigation:
+ * up/down or j/k, space toggles, 'a' toggles all, Enter confirms, q / Esc /
+ * Ctrl-C cancels.
+ *
+ * On confirm returns the number of chosen items (>= 0) and, if > 0, stores a
+ * malloc'd array of chosen 0-based indices in *out_idx (caller frees); Enter with
+ * nothing selected returns 0 with *out_idx == NULL. On cancel returns -1 with
+ * *out_idx == NULL; on allocation failure returns -2.
+ *
+ * `on_disk_count`/`total` feed the header "(M/N on disk)". Non-TTY / TERM=dumb
+ * falls back to a numbered prompt accepting an --episodes-style spec. The
+ * raw-mode terminal is always restored on every exit path including signals. */
+int tui_episode_select(const char *message, const tui_episode_t *items,
+		       size_t n, size_t on_disk_count, size_t total,
+		       size_t **out_idx);
+
+/* ---- pure helpers (exposed for unit testing the breakage-prone math) ---- */
+
+/* Physical terminal rows one logical line occupies after soft-wrapping to
+ * `columns` cells. ANSI SGR escapes (\033[...m) are not counted toward width.
+ * Always >= 1. `columns` is clamped to >= 1. */
+size_t tui_visual_rows_for_line(const char *line, size_t columns);
+
+/* First visible row index for a window of `max_visible` rows over `len` items
+ * with the cursor at `cursor`: clamp(cursor - max_visible/2, 0, len-max_visible).
+ * Returns 0 when the whole list fits. */
+size_t tui_visible_start(size_t cursor, size_t len, size_t max_visible);
+
 #endif				/* FLUX_TUI_H */

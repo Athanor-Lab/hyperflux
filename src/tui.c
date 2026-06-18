@@ -56,6 +56,7 @@
  * `volatile sig_atomic_t` for the flag touched from the signal handler. */
 static struct termios tui_saved_termios;
 static volatile sig_atomic_t tui_raw_active;	/* 1 while raw mode is on */
+static volatile sig_atomic_t tui_inline;	/* 1 = inline render (no alt screen) */
 static volatile sig_atomic_t tui_resized;	/* set by SIGWINCH */
 static int tui_atexit_installed;		/* register cleanup only once */
 
@@ -72,10 +73,13 @@ tui_restore(void)
 	if (!tui_raw_active)
 		return;
 	tui_raw_active = 0;
-	/* Show cursor, leave alternate screen. Best-effort: ignore short writes
-	 * on a dying terminal. */
-	static const char leave[] = "\033[?25h\033[?1049l";
-	ssize_t w = write(STDOUT_FILENO, leave, sizeof(leave) - 1);
+	/* Show cursor; leave the alternate screen only if we entered it. Inline
+	 * mode renders in the normal buffer, so we just re-show the cursor and
+	 * emit a CRLF so the shell prompt starts on a fresh line. Best-effort:
+	 * ignore short writes on a dying terminal. */
+	const char *leave = tui_inline ? "\033[?25h\r\n" : "\033[?25h\033[?1049l";
+	size_t leavelen = strlen(leave);
+	ssize_t w = write(STDOUT_FILENO, leave, leavelen);
 	(void)w;
 	tcsetattr(STDIN_FILENO, TCSAFLUSH, &tui_saved_termios);
 }
@@ -110,10 +114,12 @@ tui_on_winch(int sig)
 	tui_resized = 1;
 }
 
-/* Enter raw mode and the alternate screen. Returns 0 on success, -1 on
+/* Enter raw mode. With `inline_mode` zero we also switch to the alternate
+ * screen (full-screen menus); with `inline_mode` non-zero we render inline in
+ * the normal buffer (the skills-styled prompt). Returns 0 on success, -1 on
  * failure (terminal state unchanged). */
 static int
-tui_enter(void)
+tui_enter(int inline_mode)
 {
 	struct termios raw;
 
@@ -146,7 +152,7 @@ tui_enter(void)
 	memset(&wa, 0, sizeof(wa));
 	wa.sa_handler = tui_on_winch;
 	sigemptyset(&wa.sa_mask);
-	wa.sa_flags = SA_RESTART;	/* don't let resize interrupt our read() */
+	/* No SA_RESTART: let SIGWINCH interrupt read() so the loop redraws. */
 	sigaction(SIGWINCH, &wa, &tui_old_winch);
 	tui_handlers_installed = 1;
 
@@ -159,10 +165,13 @@ tui_enter(void)
 		return -1;
 	}
 	tui_raw_active = 1;
+	tui_inline = inline_mode ? 1 : 0;
 
-	/* Enter alternate screen, hide cursor. */
-	static const char enter[] = "\033[?1049h\033[?25l";
-	ssize_t w = write(STDOUT_FILENO, enter, sizeof(enter) - 1);
+	/* Full-screen: enter alternate screen + hide cursor. Inline: just hide
+	 * the cursor (the prompt draws in the normal buffer). */
+	const char *enter = inline_mode ? "\033[?25l" : "\033[?1049h\033[?25l";
+	size_t enterlen = strlen(enter);
+	ssize_t w = write(STDOUT_FILENO, enter, enterlen);
 	(void)w;
 	return 0;
 }
@@ -317,7 +326,7 @@ tui_select_one(const char *title, const tui_item_t *items, size_t n)
 	if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO) || is_dumb)
 		return tui_fallback(title, items, n);
 
-	if (tui_enter() != 0)
+	if (tui_enter(0) != 0)
 		return tui_fallback(title, items, n);
 
 	int result = -1;
@@ -557,7 +566,7 @@ tui_select_many(const char *title, const tui_item_t *items, size_t n,
 		return r;
 	}
 
-	if (tui_enter() != 0) {
+	if (tui_enter(0) != 0) {
 		int cnt = tui_fallback_multi(title, items, n, sel);
 		if (cnt < 0) {
 			free(sel);
@@ -611,6 +620,526 @@ tui_select_many(const char *title, const tui_item_t *items, size_t n,
 		/* key == 0: redraw only (SIGWINCH or unknown sequence). */
 	}
 
+	tui_leave();
+
+	if (cancelled) {
+		free(sel);
+		return -1;
+	}
+	int r = tui_collect(sel, n, out_idx);
+	free(sel);
+	return r;
+}
+
+/* ---- skills-styled episode multi-select ------------------------------- */
+
+/* ANSI SGR (picocolors -> escapes): green/dim/cyan/red/bold/underline/reset. */
+#define SGR_GREEN	"\033[32m"
+#define SGR_DIM		"\033[2m"
+#define SGR_CYAN	"\033[36m"
+#define SGR_RED		"\033[31m"
+#define SGR_BOLD	"\033[1m"
+#define SGR_ULINE	"\033[4m"
+#define SGR_RESET	"\033[0m"
+
+/* UTF-8 glyphs matching the skills reference (◆ ◇ ■ ● ○ │ ❯ └ ✓). */
+#define G_ACTIVE	"\xE2\x97\x86"	/* ◆ */
+#define G_SUBMIT	"\xE2\x97\x87"	/* ◇ */
+#define G_CANCEL	"\xE2\x96\xA0"	/* ■ */
+#define G_RADIO_ON	"\xE2\x97\x8F"	/* ● */
+#define G_RADIO_OFF	"\xE2\x97\x8B"	/* ○ */
+#define G_BAR		"\xE2\x94\x82"	/* │ */
+#define G_CURSOR	"\xE2\x9D\xAF"	/* ❯ */
+#define G_CLOSER	"\xE2\x94\x94"	/* └ */
+#define G_TICK		"\xE2\x9C\x93"	/* ✓ */
+
+/* Episode-prompt hint line, shared so the height estimate matches the render. */
+#define EPISODE_HINT	SGR_DIM G_BAR \
+	"  \xE2\x86\x91\xE2\x86\x93 move \xC2\xB7 space select \xC2\xB7" \
+	" a all \xC2\xB7 enter confirm \xC2\xB7 q cancel" SGR_RESET
+
+size_t
+tui_visual_rows_for_line(const char *line, size_t columns)
+{
+	if (!line)
+		return 1;
+	if (columns < 1)
+		columns = 1;
+
+	/* Display width = bytes that are not part of an ANSI SGR escape and not
+	 * UTF-8 continuation bytes (0x80..0xBF). One cell per code point keeps
+	 * this simple; our glyphs are all single-width in modern terminals. */
+	size_t width = 0;
+	for (const char *p = line; *p;) {
+		if (*p == '\033') {	/* skip a CSI "...m" sequence */
+			p++;
+			if (*p == '[') {
+				p++;
+				while (*p && *p != 'm')
+					p++;
+				if (*p == 'm')
+					p++;
+			}
+			continue;
+		}
+		unsigned char c = (unsigned char)*p;
+		if ((c & 0xC0) != 0x80)	/* count leading bytes, skip continuations */
+			width++;
+		p++;
+	}
+	size_t rows = (width + columns - 1) / columns;	/* ceil */
+	return rows ? rows : 1;
+}
+
+size_t
+tui_visible_start(size_t cursor, size_t len, size_t max_visible)
+{
+	if (max_visible == 0 || len <= max_visible)
+		return 0;
+	size_t half = max_visible / 2;
+	size_t maxstart = len - max_visible;	/* len > max_visible here */
+	size_t start = cursor > half ? cursor - half : 0;
+	if (start > maxstart)
+		start = maxstart;
+	return start;
+}
+
+/* A growable list of heap-owned logical lines built per render. */
+typedef struct {
+	char **v;
+	size_t n, cap;
+} line_buf_t;
+
+/* Append a copy of [s] to lb. Returns 0 or -1 (OOM; lb left consistent). */
+static int
+lb_push(line_buf_t *lb, const char *s)
+{
+	if (lb->n >= lb->cap) {
+		size_t ncap = lb->cap ? lb->cap * 2 : 16;
+		char **nv = realloc(lb->v, ncap * sizeof(*nv));
+		if (!nv)
+			return -1;
+		lb->v = nv;
+		lb->cap = ncap;
+	}
+	char *dup = malloc(strlen(s) + 1);
+	if (!dup)
+		return -1;
+	strcpy(dup, s);
+	lb->v[lb->n++] = dup;
+	return 0;
+}
+
+static void
+lb_free(line_buf_t *lb)
+{
+	for (size_t i = 0; i < lb->n; i++)
+		free(lb->v[i]);
+	free(lb->v);
+	lb->v = NULL;
+	lb->n = lb->cap = 0;
+}
+
+/* Byte length of the UTF-8 sequence starting at `p` (p points at a non-NUL),
+ * clamped so a truncated trailing sequence never advances past the NUL. */
+static size_t
+utf8_adv(const char *p)
+{
+	unsigned char c = (unsigned char)*p;
+	size_t adv = 1;
+	if (c >= 0xF0)
+		adv = 4;
+	else if (c >= 0xE0)
+		adv = 3;
+	else if (c >= 0xC0)
+		adv = 2;
+	/* Stop early if the sequence is cut short by the NUL terminator. */
+	for (size_t k = 1; k < adv; k++)
+		if (p[k] == '\0')
+			return k;
+	return adv;
+}
+
+/* Truncate `src` to at most `maxcells` display cells, appending an ellipsis
+ * ".." when it had to cut, into dst[dlen]. Plain text only (no ANSI). Counts
+ * UTF-8 code points as one cell each. Always NUL-terminates. */
+static void
+truncate_cells(char *dst, size_t dlen, const char *src, size_t maxcells)
+{
+	if (!dlen)
+		return;
+	if (maxcells < 1)
+		maxcells = 1;
+
+	/* Count code points. utf8_adv() never steps past the NUL, so malformed
+	 * input (a truncated lead byte) can't read out of bounds. */
+	size_t cells = 0;
+	const char *p = src;
+	while (*p) {
+		p += utf8_adv(p);
+		cells++;
+	}
+
+	if (cells <= maxcells) {	/* fits: copy verbatim */
+		size_t L = strlen(src);
+		if (L >= dlen)
+			L = dlen - 1;
+		memcpy(dst, src, L);
+		dst[L] = '\0';
+		return;
+	}
+
+	/* Need to cut: reserve two cells for "..". */
+	size_t keep = maxcells > 2 ? maxcells - 2 : 1;
+	cells = 0;
+	p = src;
+	while (*p && cells < keep) {
+		p += utf8_adv(p);
+		cells++;
+	}
+	size_t blen = (size_t)(p - src);
+	size_t o = 0;
+	for (size_t i = 0; i < blen && o + 1 < dlen; i++)
+		dst[o++] = src[i];
+	if (o + 2 < dlen) {
+		dst[o++] = '.';
+		dst[o++] = '.';
+	}
+	dst[o] = '\0';
+}
+
+/* Build the "Selected:" summary (up to 3 labels then "+N more") into dst. */
+static void
+build_summary(char *dst, size_t dlen, const tui_episode_t *items, size_t n,
+	      const unsigned char *sel)
+{
+	if (!dlen)
+		return;
+	dst[0] = '\0';
+
+	size_t total = 0;
+	for (size_t i = 0; i < n; i++)
+		if (sel[i])
+			total++;
+
+	if (total == 0) {
+		snprintf(dst, dlen, "(none)");
+		return;
+	}
+
+	size_t o = 0, shown = 0;
+	for (size_t i = 0; i < n && shown < 3; i++) {
+		if (!sel[i])
+			continue;
+		const char *lab = items[i].label ? items[i].label : "";
+		if (shown > 0 && o + 2 < dlen) {
+			dst[o++] = ',';
+			dst[o++] = ' ';
+		}
+		for (const char *c = lab; *c && o + 1 < dlen; c++)
+			dst[o++] = *c;
+		shown++;
+	}
+	dst[o] = '\0';
+	if (total > 3) {
+		size_t used = strlen(dst);
+		if (used < dlen)
+			snprintf(dst + used, dlen - used, " +%zu more", total - 3);
+	}
+}
+
+/* Erase the previous render: move up `phys` physical rows and clear each,
+ * leaving the cursor at the start of the first cleared row. Mirrors the skills
+ * clearRender(); phys is a PHYSICAL row count (wrapping accounted for). */
+static void
+episode_clear(size_t phys)
+{
+	if (phys == 0)
+		return;
+	char buf[32];
+	int len = snprintf(buf, sizeof(buf), "\033[%zuA", phys);
+	if (len > 0)
+		tui_puts(buf);
+	for (size_t i = 0; i < phys; i++)
+		tui_puts("\033[2K\033[1B");	/* clear line, move down one */
+	len = snprintf(buf, sizeof(buf), "\033[%zuA", phys);
+	if (len > 0)
+		tui_puts(buf);
+}
+
+/* Width of the terminal in columns; default 80 on failure. */
+static size_t
+tui_cols(void)
+{
+	struct winsize ws;
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+		return ws.ws_col;
+	return 80;
+}
+
+/* Render the whole prompt for the given state. Returns the number of PHYSICAL
+ * rows written (so the next clear erases exactly that much), or 0 on OOM. */
+static size_t
+episode_render(const char *message, const tui_episode_t *items, size_t n,
+	       const unsigned char *sel, size_t cursor, size_t on_disk_count,
+	       size_t total, size_t prev_phys, int state /*0 active,1 submit,2 cancel*/)
+{
+	size_t cols = tui_cols();
+	line_buf_t lb = { NULL, 0, 0 };
+	char line[1024];
+	int oom = 0;
+	/* Declared before any `goto emit` so the jump skips no initialization. */
+	size_t start = 0, end = 0, label_budget = 2, before = 0, after = 0;
+
+	size_t rows = (size_t)tui_rows();
+
+	const char *icon = state == 0 ? SGR_GREEN G_ACTIVE SGR_RESET
+		: state == 2 ? SGR_RED G_CANCEL SGR_RESET
+		: SGR_GREEN G_SUBMIT SGR_RESET;
+
+	/* Header: 'icon  <bold message>   (M/N on disk)'. */
+	snprintf(line, sizeof(line), "%s  " SGR_BOLD "%s" SGR_RESET
+		 "   " SGR_DIM "(%zu/%zu on disk)" SGR_RESET,
+		 icon, message ? message : "", on_disk_count, total);
+
+	/* Chrome physical rows: header + hint (both measured, they wrap on a narrow
+	 * term), two gutters, scroll, closer (1 each) and the selected summary (up
+	 * to 2 rows). Each item row is <= cols so it never wraps. Clamp max_visible
+	 * so chrome + window <= rows-1, keeping the block inside the viewport so
+	 * episode_clear() never desyncs. */
+	size_t chrome = tui_visual_rows_for_line(line, cols)
+		+ tui_visual_rows_for_line(EPISODE_HINT, cols) + 6;
+	size_t budget = rows > 1 ? rows - 1 : 1;
+	size_t max_visible = budget > chrome ? budget - chrome : 1;
+	if (max_visible > n)
+		max_visible = n;
+	if (max_visible == 0)
+		max_visible = 1;
+
+	if (lb_push(&lb, line) < 0) { oom = 1; goto emit; }
+
+	if (state != 0) {	/* submit / cancel: one summary/closer line */
+		if (state == 1) {
+			char summary[512];
+			build_summary(summary, sizeof(summary), items, n, sel);
+			snprintf(line, sizeof(line),
+				 SGR_DIM G_BAR SGR_RESET "  " SGR_GREEN
+				 "Selected:" SGR_RESET " %s", summary);
+		} else {
+			snprintf(line, sizeof(line),
+				 SGR_DIM G_BAR "  Cancelled" SGR_RESET);
+		}
+		if (lb_push(&lb, line) < 0) { oom = 1; goto emit; }
+		goto emit;
+	}
+
+	/* Hint line. */
+	if (lb_push(&lb, EPISODE_HINT) < 0) { oom = 1; goto emit; }
+
+	/* Empty gutter. */
+	if (lb_push(&lb, SGR_DIM G_BAR SGR_RESET) < 0) { oom = 1; goto emit; }
+
+	/* Windowed item rows. */
+	start = tui_visible_start(cursor, n, max_visible);
+	end = start + max_visible;
+	if (end > n)
+		end = n;
+
+	/* Budget for the label: columns minus the row prefix "│ ❯ ● " (~6 cells)
+	 * minus a trailing " ✓" (2 cells) so on-disk rows don't wrap. */
+	label_budget = cols > 10 ? cols - 8 : 2;
+
+	for (size_t i = start; i < end; i++) {
+		const char *radio = sel[i] ? SGR_GREEN G_RADIO_ON SGR_RESET
+					   : SGR_DIM G_RADIO_OFF SGR_RESET;
+		int is_cur = (i == cursor);
+		const char *prefix = is_cur ? SGR_CYAN G_CURSOR SGR_RESET : " ";
+		char lab[768];
+		truncate_cells(lab, sizeof(lab),
+			       items[i].label ? items[i].label : "", label_budget);
+		const char *tick = items[i].on_disk
+			? " " SGR_GREEN G_TICK SGR_RESET : "";
+		if (is_cur)
+			snprintf(line, sizeof(line),
+				 SGR_DIM G_BAR SGR_RESET " %s %s " SGR_ULINE
+				 "%s" SGR_RESET "%s", prefix, radio, lab, tick);
+		else
+			snprintf(line, sizeof(line),
+				 SGR_DIM G_BAR SGR_RESET " %s %s %s%s",
+				 prefix, radio, lab, tick);
+		if (lb_push(&lb, line) < 0) { oom = 1; goto emit; }
+	}
+
+	/* Scroll indicator: '↑ X more   ↓ Y more' when items are off-window. */
+	before = start;
+	after = n - end;
+	if (before > 0 || after > 0) {
+		char ind[128];
+		int o = 0;
+		ind[0] = '\0';
+		if (before > 0)
+			o += snprintf(ind + o, sizeof(ind) - o,
+				      "\xE2\x86\x91 %zu more", before);
+		if (after > 0)
+			snprintf(ind + o, sizeof(ind) - o, "%s\xE2\x86\x93 %zu more",
+				 before > 0 ? "   " : "", after);
+		snprintf(line, sizeof(line), SGR_DIM G_BAR "  %s" SGR_RESET, ind);
+		if (lb_push(&lb, line) < 0) { oom = 1; goto emit; }
+	}
+
+	/* Gutter + Selected summary + closer. */
+	if (lb_push(&lb, SGR_DIM G_BAR SGR_RESET) < 0) { oom = 1; goto emit; }
+	{
+		char summary[512];
+		build_summary(summary, sizeof(summary), items, n, sel);
+		size_t nsel = 0;
+		for (size_t i = 0; i < n; i++)
+			if (sel[i])
+				nsel++;
+		if (nsel == 0)
+			snprintf(line, sizeof(line),
+				 SGR_DIM G_BAR "  Selected: (none)" SGR_RESET);
+		else
+			snprintf(line, sizeof(line),
+				 SGR_DIM G_BAR SGR_RESET "  " SGR_GREEN
+				 "Selected:" SGR_RESET " %s", summary);
+		if (lb_push(&lb, line) < 0) { oom = 1; goto emit; }
+	}
+	if (lb_push(&lb, SGR_DIM G_CLOSER SGR_RESET) < 0) { oom = 1; goto emit; }
+
+ emit:
+	episode_clear(prev_phys);
+	if (oom) {
+		lb_free(&lb);
+		return 0;
+	}
+
+	/* Write all lines joined by CRLF; count physical rows for the next clear.
+	 * Trailing CRLF leaves the cursor on a fresh line below the closer. */
+	size_t phys = 0;
+	for (size_t i = 0; i < lb.n; i++) {
+		tui_puts(lb.v[i]);
+		tui_puts("\r\n");
+		phys += tui_visual_rows_for_line(lb.v[i], cols);
+	}
+	lb_free(&lb);
+	return phys;
+}
+
+/* Non-TTY fallback: numbered list with on-disk markers + an --episodes spec. */
+static int
+episode_fallback(const char *message, const tui_episode_t *items, size_t n,
+		 unsigned char *sel)
+{
+	if (message)
+		fprintf(stderr, "%s\n", message);
+	for (size_t i = 0; i < n; i++)
+		fprintf(stderr, "  %zu) %s%s\n", i + 1,
+			items[i].label ? items[i].label : "",
+			items[i].on_disk ? "  [on disk]" : "");
+	fprintf(stderr,
+		"Select (e.g. 1,3-5,8 or 'all'; Enter = missing only; q to cancel): ");
+	fflush(stderr);
+
+	char buf[256];
+	if (!fgets(buf, sizeof(buf), stdin))
+		return -1;
+	char *nl = strpbrk(buf, "\r\n");
+	if (nl)
+		*nl = '\0';
+	if (buf[0] == 'q' || buf[0] == 'Q')
+		return -1;
+
+	/* Empty line: keep the preselected (missing) set. */
+	const char *p = buf;
+	while (*p == ' ' || *p == '\t')
+		p++;
+	if (*p == '\0') {
+		int cnt = 0;
+		for (size_t i = 0; i < n; i++)
+			if (sel[i])
+				cnt++;
+		return cnt;
+	}
+
+	memset(sel, 0, n);
+	if (tui_apply_spec(buf, sel, n) != 0)
+		return -1;
+	int cnt = 0;
+	for (size_t i = 0; i < n; i++)
+		if (sel[i])
+			cnt++;
+	return cnt;
+}
+
+int
+tui_episode_select(const char *message, const tui_episode_t *items, size_t n,
+		   size_t on_disk_count, size_t total, size_t **out_idx)
+{
+	if (out_idx)
+		*out_idx = NULL;
+	if (!items || n == 0 || !out_idx)
+		return -1;
+
+	unsigned char *sel = calloc(n, 1);
+	if (!sel)
+		return -2;
+	for (size_t i = 0; i < n; i++)
+		sel[i] = items[i].selected ? 1 : 0;
+
+	const char *term = getenv("TERM");
+	int is_dumb = !term || !*term || strcmp(term, "dumb") == 0;
+	if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO) || is_dumb ||
+	    tui_enter(1) != 0) {
+		int cnt = episode_fallback(message, items, n, sel);
+		if (cnt < 0) {
+			free(sel);
+			return -1;
+		}
+		int r = tui_collect(sel, n, out_idx);
+		free(sel);
+		return r;
+	}
+
+	int cancelled = 0;
+	size_t cursor = 0;
+	size_t prev_phys = 0;
+	for (;;) {
+		prev_phys = episode_render(message, items, n, sel, cursor,
+					   on_disk_count, total, prev_phys, 0);
+		tui_resized = 0;
+
+		int key = tui_readkey();
+		if (key == 'q') {
+			cancelled = 1;
+			break;
+		} else if (key == '\r') {
+			break;
+		} else if (key == 'j') {
+			if (cursor + 1 < n)
+				cursor++;
+		} else if (key == 'k') {
+			if (cursor > 0)
+				cursor--;
+		} else if (key == ' ') {
+			sel[cursor] = !sel[cursor];
+		} else if (key == 'a') {	/* toggle all on <-> off */
+			int all = 1;
+			for (size_t i = 0; i < n; i++)
+				if (!sel[i]) { all = 0; break; }
+			memset(sel, all ? 0 : 1, n);
+		} else if (key == 'g') {
+			cursor = 0;
+		} else if (key == 'G') {
+			cursor = n - 1;
+		}
+		/* key == 0: redraw only (SIGWINCH or unknown sequence). */
+	}
+
+	/* Final frame: submit or cancel, then leave raw mode. */
+	prev_phys = episode_render(message, items, n, sel, cursor,
+				   on_disk_count, total, prev_phys,
+				   cancelled ? 2 : 1);
 	tui_leave();
 
 	if (cancelled) {

@@ -886,16 +886,24 @@ extractor_run(const extractor_t *ex, const char *page_url,
 					    d->name, d->source);
 				goto done;
 			}
-			char *cap = NULL;
-			int r = regex_capture1(d->arg, src, &cap, err);
-			if (r < 0)
+			/* Interpolate {var}s in the regex before it compiles. */
+			char *ere = interpolate(d->arg, &st, err);
+			if (!ere)
 				goto done;
+			char *cap = NULL;
+			int r = regex_capture1(ere, src, &cap, err);
+			if (r < 0) {
+				free(ere);
+				goto done;
+			}
 			if (r == 0) {
 				ext_set_err(err, ex->path, 0,
 					    "var '%s': regex /%s/ did not match source '%s'",
-					    d->name, d->arg, d->source);
+					    d->name, ere, d->source);
+				free(ere);
 				goto done;
 			}
+			free(ere);
 			if (store_set(&st, d->name, cap) < 0) {
 				ext_set_err(err, ex->path, 0,
 					    "var '%s': store full", d->name);
@@ -1191,8 +1199,13 @@ extractor_list_episodes(const extractor_t *ex, const char *page_url,
 					    d->name, d->source);
 				goto done;
 			}
+			/* Interpolate {var}s (e.g. a slug) before the regex
+			 * compiles, so the list can be anchored to this series. */
+			char *ere = interpolate(d->arg, &st, err);
+			if (!ere)
+				goto done;
 			char *cerr = NULL;
-			int rc = regex_capture_all(d->arg, src,
+			int rc = regex_capture_all(ere, src,
 						   EXTRACTOR_MAX_EPISODES,
 						   &raw, &nraw, &cerr);
 			if (rc < 0) {
@@ -1200,14 +1213,17 @@ extractor_list_episodes(const extractor_t *ex, const char *page_url,
 					*err = cerr;
 				else
 					free(cerr);
+				free(ere);
 				goto done;
 			}
 			if (nraw == 0) {
 				ext_set_err(err, ex->path, 0,
 					    "list '%s': regex /%s/ matched no items in source '%s'",
-					    d->name, d->arg, d->source);
+					    d->name, ere, d->source);
+				free(ere);
 				goto done;
 			}
+			free(ere);
 			break;	/* one 'list' per config; stop at the first */
 		} else if (d->kind == EXT_DIR_VAR) {
 			const char *src = store_get(&st, d->source,
@@ -1218,16 +1234,24 @@ extractor_list_episodes(const extractor_t *ex, const char *page_url,
 					    d->name, d->source);
 				goto done;
 			}
-			char *cap = NULL;
-			int r = regex_capture1(d->arg, src, &cap, err);
-			if (r < 0)
+			/* Interpolate {var}s in the regex before it compiles. */
+			char *ere = interpolate(d->arg, &st, err);
+			if (!ere)
 				goto done;
+			char *cap = NULL;
+			int r = regex_capture1(ere, src, &cap, err);
+			if (r < 0) {
+				free(ere);
+				goto done;
+			}
 			if (r == 0) {
 				ext_set_err(err, ex->path, 0,
 					    "var '%s': regex /%s/ did not match source '%s'",
-					    d->name, d->arg, d->source);
+					    d->name, ere, d->source);
+				free(ere);
 				goto done;
 			}
+			free(ere);
 			if (store_set(&st, d->name, cap) < 0) {
 				ext_set_err(err, ex->path, 0,
 					    "var '%s': store full", d->name);

@@ -1019,17 +1019,11 @@ episode_basename(char *dst, size_t dlen, const char *media_url, size_t num)
 {
 	if (!dlen)
 		return;
+	dst[0] = '\0';
 
-	/* Always-unique numeric prefix. */
-	int pre = snprintf(dst, dlen, "ep%02zu", num);
-	if (pre <= 0 || (size_t)pre >= dlen) {
-		if (dlen)
-			dst[0] = '\0';
-		return;
-	}
-	size_t o = (size_t)pre;
-
-	/* Take the segment after the last '/', dropping any query/fragment. */
+	/* Take the segment after the last '/', dropping any query/fragment, and use
+	 * it verbatim (only illegal chars sanitized) so the local file keeps the same
+	 * name it has on the site. */
 	const char *p = media_url;
 	const char *sep = strstr(media_url, "://");
 	if (sep)
@@ -1040,49 +1034,79 @@ episode_basename(char *dst, size_t dlen, const char *media_url, size_t num)
 			last = c + 1;
 	size_t seglen = strcspn(last, "?#");
 
-	/* Sanitize and append "-<leaf>" only when the leaf has a useful char. */
+	size_t o = 0;
 	int useful = 0;
-	for (size_t i = 0; i < seglen; i++) {
-		unsigned char c = (unsigned char)last[i];
-		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-		    (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-') {
-			if (c != '.')
-				useful = 1;
-		}
-	}
-	if (!useful)
-		return;	/* nothing meaningful to add: keep "epNN" */
-
-	if (o + 1 < dlen)
-		dst[o++] = '-';
 	for (size_t i = 0; i < seglen && o + 1 < dlen; i++) {
 		unsigned char c = (unsigned char)last[i];
 		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-		    (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-')
+		    (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-') {
 			dst[o++] = (char)c;
-		else
+			if (c != '.')
+				useful = 1;
+		} else {
 			dst[o++] = '_';
+		}
 	}
 	dst[o] = '\0';
+
+	/* No usable leaf (URL ends in '/'): fall back to a numbered name. */
+	if (!useful)
+		snprintf(dst, dlen, "episode-%02zu", num);
+}
+
+/* Build the on-disk output PATH for episode #num given its (already resolved)
+ * media URL and the -o destination. For a plain -o file the path is out_name
+ * verbatim; for a directory (or empty -o) it is "<dir>/<basename>" / "<basename>"
+ * where <basename> is episode_basename(media_url, num). Returns 0 on success,
+ * -1 if the path would overflow dst. */
+static int
+episode_outpath(char *dst, size_t dlen, const char *out_name, int out_is_file,
+		int out_is_dir, const char *media_url, size_t num)
+{
+	if (out_is_file) {
+		if (strlen(out_name) >= dlen)
+			return -1;
+		strlcpy(dst, out_name, dlen);
+		return 0;
+	}
+	char base[96];
+	episode_basename(base, sizeof(base), media_url, num);
+	if (out_is_dir) {
+		int w = snprintf(dst, dlen, "%s/%s", out_name, base);
+		if (w <= 0 || (size_t)w >= dlen)
+			return -1;
+	} else {
+		if (strlen(base) >= dlen)
+			return -1;
+		strlcpy(dst, base, dlen);
+	}
+	return 0;
 }
 
 /* Batch-download a selected subset of a series' episodes.
  *
- * episode_urls[0..nepisodes) are the ordered episode page URLs. Selection comes
- * from --all, --episodes <spec>, or (interactively) the multi-select TUI. Each
- * selected episode is re-resolved through the per-episode pipeline and
- * downloaded; one failure does not abort the rest. out_name, if a directory (or
- * empty), receives per-episode files; a plain -o file name is only honoured for
- * a single selected episode (else it would clobber). Returns 0 if all selected
- * succeeded, 2 on interrupt, 1 if any failed or on a setup error. */
+ * episode_urls[0..nepisodes) are the ordered episode page URLs. Each episode is
+ * resolved up-front (one request apiece) to its media URL so we can derive the
+ * remote filename and check whether it already exists in the target directory.
+ * Selection comes from --all, --episodes <spec>, or (interactively) the
+ * skills-styled multi-select TUI (on-disk episodes start unselected; missing
+ * ones start selected). Selected episodes are downloaded, SKIPPING any whose
+ * file already exists; one failure does not abort the rest. out_name, if a
+ * directory (or empty), receives per-episode files; a plain -o file name is only
+ * honoured for a single selected episode (else it would clobber). Returns 0 if
+ * all attempted succeeded, 2 on interrupt, 1 if any failed or on a setup error. */
 static int
 run_series(conf_t *conf, const char *page_url, const char *extract_name,
 	   char **episode_urls, size_t nepisodes, int select_all,
 	   const char *episodes_spec, int auto_yes, const char *out_name,
 	   const char *hls_quality, const char *hls_mux)
 {
-	unsigned char *sel = NULL;	/* sel[i] != 0 -> download episode i */
+	unsigned char *sel = NULL;	/* sel[i] != 0 -> requested */
 	size_t nsel = 0;
+	size_t ndisk = 0;
+	size_t to_download = 0;
+	size_t done = 0, failed = 0, skipped = 0, attempted = 0;
+	int ret = 1;
 
 	if (select_all && episodes_spec) {
 		fprintf(stderr,
@@ -1090,11 +1114,53 @@ run_series(conf_t *conf, const char *page_url, const char *extract_name,
 		return 1;
 	}
 
+	int out_is_dir = out_name && *out_name && is_directory(out_name);
+	int out_is_file = out_name && *out_name && !out_is_dir;
+
+	/* Resolve every episode up-front so we can show on-disk status and avoid
+	 * re-resolving at download time. This is N requests; that is accepted. */
+	char **media_urls = calloc(nepisodes, sizeof(*media_urls));
+	unsigned char *on_disk = calloc(nepisodes, 1);
+	char (*outpaths)[MAX_STRING] = calloc(nepisodes, sizeof(*outpaths));
+	if (!media_urls || !on_disk || !outpaths) {
+		fprintf(stderr, _("flux: out of memory\n"));
+		goto cleanup;
+	}
+
+	if (conf->verbose >= 0)
+		printf(_("Resolving %zu episodes\xE2\x80\xA6\n"), nepisodes);
+
+	for (size_t i = 0; i < nepisodes && run; i++) {
+		char *media = NULL;
+		int er = extractor_run_series_episode(page_url, episode_urls[i],
+						      extract_name,
+						      extract_http_fetch, conf,
+						      &media);
+		if (er < 0 || !media) {
+			free(media);
+			media_urls[i] = NULL;	/* unresolved: fails at download */
+			continue;
+		}
+		media_urls[i] = media;
+		if (episode_outpath(outpaths[i], sizeof(outpaths[i]), out_name,
+				    out_is_file, out_is_dir, media, i + 1) != 0)
+			continue;	/* too long: leave empty, fails later */
+		if (outpaths[i][0] && access(outpaths[i], F_OK) == 0) {
+			on_disk[i] = 1;
+			ndisk++;
+		}
+	}
+	if (!run) {	/* interrupted during resolution */
+		ret = 2;
+		goto cleanup;
+	}
+
+	/* ---- selection -------------------------------------------------- */
 	if (select_all) {
 		sel = malloc(nepisodes);
 		if (!sel) {
 			fprintf(stderr, _("flux: out of memory\n"));
-			return 1;
+			goto cleanup;
 		}
 		memset(sel, 1, nepisodes);
 		nsel = nepisodes;
@@ -1103,53 +1169,84 @@ run_series(conf_t *conf, const char *page_url, const char *extract_name,
 		if (extractor_parse_episodes(episodes_spec, nepisodes, &sel,
 					     &nsel, eb, sizeof(eb)) != 0) {
 			fprintf(stderr, "flux: %s\n", eb);
-			return 1;
+			goto cleanup;
 		}
 	} else {
 		/* Interactive (or non-TTY fallback) multi-select. With --yes and
 		 * no explicit selection on a non-TTY we must not guess: the TUI
-		 * fallback reads a spec from stdin; refuse if that is unavailable. */
+		 * fallback reads a spec from stdin; refuse if unavailable. */
 		if (auto_yes && !isatty(STDIN_FILENO)) {
 			fprintf(stderr,
 				_("flux: %zu episodes found; pass --all or --episodes to choose non-interactively.\n"),
 				nepisodes);
-			return 1;
+			goto cleanup;
 		}
 
-		tui_item_t *items = calloc(nepisodes, sizeof(*items));
-		char (*labels)[64] = calloc(nepisodes, sizeof(*labels));
+		tui_episode_t *items = calloc(nepisodes, sizeof(*items));
+		char (*labels)[160] = calloc(nepisodes, sizeof(*labels));
 		if (!items || !labels) {
 			free(items);
 			free(labels);
 			fprintf(stderr, _("flux: out of memory\n"));
-			return 1;
+			goto cleanup;
 		}
+		/* Label = episode number + remote filename (basename of the
+		 * resolved media URL); missing pre-selected, on-disk unselected. */
 		for (size_t i = 0; i < nepisodes; i++) {
-			snprintf(labels[i], sizeof(labels[i]),
-				 "Episode %zu", i + 1);
+			const char *leaf = outpaths[i][0]
+				? (strrchr(outpaths[i], '/')
+				   ? strrchr(outpaths[i], '/') + 1 : outpaths[i])
+				: "(unresolved)";
+			snprintf(labels[i], sizeof(labels[i]), "%2zu  %s",
+				 i + 1, leaf);
 			items[i].label = labels[i];
-			items[i].detail = episode_urls[i];
+			items[i].on_disk = on_disk[i];
+			items[i].selected = on_disk[i] ? 0 : 1;
 		}
+		/* Header name: a forced config name, else the /play/ slug with its
+		 * trailing ".<id>" dropped (e.g. dr-stone-4-part-3-ita). */
+		char sname[128];
+		{
+			const char *ps = strstr(page_url, "/play/");
+			const char *s = ps ? ps + 6 : page_url;
+			size_t sl = strcspn(s, "/");
+			size_t cut = sl;
+			for (size_t k = 0; k < sl; k++)
+				if (s[k] == '.')
+					cut = k;	/* position of the last '.' */
+			if (cut > 0)
+				sl = cut;	/* drop the trailing ".<id>" */
+			if (sl >= sizeof(sname))
+				sl = sizeof(sname) - 1;
+			memcpy(sname, s, sl);
+			sname[sl] = '\0';
+			if (sname[0] == '\0')
+				strlcpy(sname, "series", sizeof(sname));
+		}
+		char header[256];
+		snprintf(header, sizeof(header),
+			 _("%s \xE2\x80\x94 select episodes to download"),
+			 extract_name ? extract_name : sname);
 		size_t *idx = NULL;
-		int cnt = tui_select_many(_("Select episodes to download:"),
-					  items, nepisodes, NULL, &idx);
+		int cnt = tui_episode_select(header, items, nepisodes, ndisk,
+					     nepisodes, &idx);
 		free(items);
 		free(labels);
 		if (cnt < 0) {	/* cancelled or OOM */
 			free(idx);
 			fprintf(stderr, _("flux: episode selection cancelled.\n"));
-			return 1;
+			goto cleanup;
 		}
 		if (cnt == 0) {
 			free(idx);
 			fprintf(stderr, _("flux: no episodes selected.\n"));
-			return 1;
+			goto cleanup;
 		}
 		sel = calloc(nepisodes, 1);
 		if (!sel) {
 			free(idx);
 			fprintf(stderr, _("flux: out of memory\n"));
-			return 1;
+			goto cleanup;
 		}
 		for (int i = 0; i < cnt; i++)
 			if ((size_t)idx[i] < nepisodes)
@@ -1158,87 +1255,68 @@ run_series(conf_t *conf, const char *page_url, const char *extract_name,
 		nsel = (size_t)cnt;
 	}
 
-	/* A plain -o file (not a directory) can hold only one episode. */
-	int out_is_dir = out_name && *out_name && is_directory(out_name);
-	int out_is_file = out_name && *out_name && !out_is_dir;
-	if (out_is_file && nsel > 1) {
+	/* A plain -o file (not a directory) can hold only one episode. Count the
+	 * episodes that will actually download (selected and not already present). */
+	for (size_t i = 0; i < nepisodes; i++)
+		if (sel[i] && !on_disk[i])
+			to_download++;
+	if (out_is_file && to_download > 1) {
 		fprintf(stderr,
 			_("Refusing to write %zu episodes to a single file '%s'; use a directory.\n"),
-			nsel, out_name);
-		free(sel);
-		return 1;
+			to_download, out_name);
+		goto cleanup;
 	}
 
-	size_t done = 0, failed = 0, attempted = 0;
+	/* ---- download --------------------------------------------------- */
 	for (size_t i = 0; i < nepisodes && run; i++) {
 		if (!sel[i])
 			continue;
+		if (on_disk[i]) {	/* already present: skip, never re-download */
+			printf(_("\n=== episode %zu/%zu: already on disk, skipping (%s) ===\n"),
+			       i + 1, nepisodes, outpaths[i]);
+			skipped++;
+			continue;
+		}
 		attempted++;
 
 		printf(_("\n=== episode %zu/%zu: %s ===\n"),
 		       i + 1, nepisodes, episode_urls[i]);
 
-		/* Re-run the per-episode pipeline (discovered via the SERIES
-		 * page URL; the engine skips 'list' and binds {url} to this
-		 * episode) to get the concrete media URL. */
-		char *media = NULL;
-		int er = extractor_run_series_episode(page_url, episode_urls[i],
-						      extract_name,
-						      extract_http_fetch, conf,
-						      &media);
-		if (er < 0 || !media) {
+		if (!media_urls[i] || !outpaths[i][0]) {
 			fprintf(stderr,
 				_("flux: episode %zu: could not resolve media URL.\n"),
 				i + 1);
-			free(media);
 			failed++;
 			continue;
 		}
 		if (conf->verbose > 0)
-			printf(_("Extracted media URL: %s\n"), media);
+			printf(_("Extracted media URL: %s\n"), media_urls[i]);
 
-		/* Build a distinct output path. For a directory (or empty -o)
-		 * derive a per-episode leaf so episodes never clobber. For a
-		 * single-episode plain -o, honour the given name verbatim. */
-		char outpath[MAX_STRING];
-		if (out_is_file) {
-			strlcpy(outpath, out_name, sizeof(outpath));
-		} else {
-			char base[96];
-			episode_basename(base, sizeof(base), media, i + 1);
-			if (out_is_dir) {
-				int w = snprintf(outpath, sizeof(outpath),
-						 "%s/%s", out_name, base);
-				if (w <= 0 || (size_t)w >= sizeof(outpath)) {
-					fprintf(stderr,
-						_("flux: episode %zu: output path too long.\n"),
-						i + 1);
-					free(media);
-					failed++;
-					continue;
-				}
-			} else {
-				strlcpy(outpath, base, sizeof(outpath));
-			}
-		}
-
-		int r = download_media_url(conf, media, outpath, hls_quality,
-					   hls_mux);
-		free(media);
+		int r = download_media_url(conf, media_urls[i], outpaths[i],
+					   hls_quality, hls_mux);
 		if (r == 0)
 			done++;
 		else
 			failed++;
 	}
 
+	printf(_("\nEpisodes: %zu requested, %zu downloaded, %zu skipped (on disk), %zu failed.\n"),
+	       nsel, done, skipped, failed);
+
+	if (!run && attempted < to_download)
+		ret = 2;	/* interrupted before finishing the batch */
+	else
+		ret = failed ? 1 : 0;
+
+ cleanup:
+	if (media_urls)
+		for (size_t i = 0; i < nepisodes; i++)
+			free(media_urls[i]);
+	free(media_urls);
+	free(on_disk);
+	free(outpaths);
 	free(sel);
-
-	printf(_("\nEpisodes: %zu requested, %zu downloaded, %zu failed.\n"),
-	       nsel, done, failed);
-
-	if (!run && attempted < nsel)
-		return 2;	/* interrupted before finishing the batch */
-	return failed ? 1 : 0;
+	return ret;
 }
 
 /* Return 1 if p exists and is a directory, 0 otherwise. */

@@ -319,6 +319,91 @@ test_list_episodes(void)
 	extractor_free(ex);
 }
 
+/* {var} in a var/list regex is interpolated against the store before regcomp,
+ * so a slug captured from the URL can anchor the list to one series. The fixture
+ * mixes this series' /play/ links with another series' links the slug excludes,
+ * and uses real data-num attributes plus an epid containing '-' and '_'. */
+static const char *SERIES_HTML_SLUG =
+	"<!doctype html><html><body>\n"
+	"<a data-num=\"1\" href=\"/play/anime-name.4242/Ep01\">1</a>\n"
+	"<a data-num=\"2\" href=\"/play/anime-name.4242/VbGT-F\">2</a>\n"
+	"<a data-num=\"3\" href=\"/play/anime-name.4242/a_b-C9\">3</a>\n"
+	"<a data-num=\"1\" href=\"/play/other-show.9999/Zz01\">other 1</a>\n"
+	"</body></html>\n";
+
+/* The slug-anchored list: capture {slug} from {url}, fetch the page, then list
+ * only this series' /play/{slug}/<epid> hrefs. epids may carry '-'/'_'. */
+static void
+test_list_episodes_slug_interp(void)
+{
+	const char *cfg =
+		"name series\n"
+		"match example\\.[a-z]+/play/\n"
+		"var  slug <- url  regex /play/([^/]+)/\n"
+		"get  page <- {url}\n"
+		"list eps  <- page regex href=\"(/play/{slug}/[A-Za-z0-9_-]+)\"\n"
+		"var  epid <- url  regex /play/[^/]+/([A-Za-z0-9_-]+)\n"
+		"output https://cdn.example.com/v/{epid}.mp4\n";
+	char *err = NULL;
+	extractor_t *ex = extractor_parse(cfg, "series.conf", &err);
+	CHECK(ex != NULL, "slug-interp series config parses");
+	if (!ex) {
+		printf("  parse err: %s\n", err ? err : "(none)");
+		free(err);
+		return;
+	}
+
+	char **urls = NULL;
+	size_t n = 0;
+	int r = extractor_list_episodes(ex,
+		"https://example.tv/play/anime-name.4242/Ep01",
+		series_fetch, (void *)SERIES_HTML_SLUG, &urls, &n, &err);
+	CHECK(r == 0, "slug-anchored list_episodes succeeds");
+	if (r != 0) {
+		printf("  list err: %s\n", err ? err : "(none)");
+		free(err);
+		extractor_free(ex);
+		return;
+	}
+	CHECK(n == 3, "slug list captured exactly this series' 3 episodes");
+	if (n == 3) {
+		CHECK_STR(urls[0],
+			  "https://example.tv/play/anime-name.4242/Ep01",
+			  "slug ep1 absolute");
+		CHECK_STR(urls[1],
+			  "https://example.tv/play/anime-name.4242/VbGT-F",
+			  "slug ep2 keeps a '-' in the epid");
+		CHECK_STR(urls[2],
+			  "https://example.tv/play/anime-name.4242/a_b-C9",
+			  "slug ep3 keeps '_' and '-' in the epid");
+	}
+	extractor_free_urls(urls, n);
+	extractor_free(ex);
+}
+
+/* An interpolated {var} in a regex that is undefined must fail clearly. */
+static void
+test_regex_interp_undefined_var(void)
+{
+	const char *cfg =
+		"name x\n"
+		"var a <- url regex /play/({missing})\n"
+		"output {a}\n";
+	char *err = NULL;
+	extractor_t *ex = extractor_parse(cfg, "x.conf", &err);
+	CHECK(ex != NULL, "regex-undefined-var config parses");
+	if (!ex) { free(err); return; }
+
+	char *media = NULL;
+	int r = extractor_run(ex, "https://h/play/foo", NULL, NULL, &media, &err);
+	CHECK(r < 0, "undefined {var} in a regex fails the run");
+	CHECK(media == NULL, "no media URL on undefined regex var");
+	CHECK(err && strstr(err, "missing"),
+	      "error names the undefined regex variable");
+	free(err);
+	extractor_free(ex);
+}
+
 /* A per-episode run must SKIP the 'list' directive and resolve {url} to media. */
 static void
 test_per_episode_run_skips_list(void)
@@ -510,6 +595,8 @@ main(void)
 	test_run_nomatch_var();
 	test_run_undefined_var();
 	test_list_episodes();
+	test_list_episodes_slug_interp();
+	test_regex_interp_undefined_var();
 	test_per_episode_run_skips_list();
 	test_pre_list_setup_not_rerun();
 	test_episodes_spec();
