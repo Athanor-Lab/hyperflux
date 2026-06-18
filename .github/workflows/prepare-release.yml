@@ -1,0 +1,59 @@
+name: Prepare release
+
+# Manual entrypoint: pick a new version, bump the VERSION file, push a release
+# branch, and open (or link) the PR. Merging that PR publishes the release.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New version without leading v, e.g. 1.0.1"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Bump VERSION, push branch, open PR
+        env:
+          RAW_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Accept '1.2.3' or 'v1.2.3'; store and tag without the leading v.
+          version="${RAW_VERSION#v}"
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "Invalid version: '$RAW_VERSION' (want X.Y.Z)" >&2; exit 1; }
+
+          if git rev-parse -q --verify "refs/tags/v${version}" >/dev/null; then
+            echo "Tag v${version} already exists" >&2; exit 1
+          fi
+
+          branch="release/v${version}"
+          date_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # VERSION line 1 is '<version> <RELDATE>', read by FLUX_VER_READ.
+          printf '%s %s\n' "$version" "$date_utc" > VERSION
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add VERSION
+          git commit -m "release: v${version}"
+          git push -u origin "$branch"
+
+          title="release: v${version}"
+          body="Version bump to v${version}. Merge to publish the GitHub Release and Cloudsmith packages."
+          # The org may block Actions from opening PRs; fall back to a link.
+          if ! gh pr create --base master --head "$branch" --title "$title" --body "$body"; then
+            url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/master...${branch}?expand=1"
+            echo "Could not open the PR automatically. Open it here: $url"
+            echo "[Open the release PR](${url})" >> "$GITHUB_STEP_SUMMARY"
+          fi

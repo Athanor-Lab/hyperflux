@@ -6,6 +6,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_call:
+    inputs:
+      version:
+        description: "Version to release without leading v (e.g. 1.0.1); derived from the tag on a tag push."
+        required: false
+        type: string
 
 # The release job needs to create a Release and upload assets to this repo.
 permissions:
@@ -39,18 +45,29 @@ jobs:
 
       - name: Derive version
         id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # Tag is refs/tags/vX.Y.Z; strip the leading 'v' for package versions.
-          tag="${GITHUB_REF#refs/tags/}"
-          version="${tag#v}"
+          # From workflow_call: use the version input. From a tag push: strip
+          # the leading 'v' off refs/tags/vX.Y.Z.
+          if [ -n "${INPUT_VERSION:-}" ]; then
+            version="${INPUT_VERSION#v}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+            version="${tag#v}"
+          fi
           if [ -z "$version" ]; then
-            echo "Could not derive version from ref '$GITHUB_REF'" >&2
+            echo "Could not derive version (ref '$GITHUB_REF', input '${INPUT_VERSION:-}')" >&2
             exit 1
           fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Building release $tag (version $version)"
+          # Reject malformed/non-semver tags on the manual push path (the other
+          # entrypoints validate too); nfpm and asset names depend on X.Y.Z.
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "Version '$version' is not X.Y.Z" >&2; exit 1; }
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Building release v${version} (version ${version})"
 
       - name: Bootstrap (autoreconf)
         run: |
@@ -119,8 +136,10 @@ jobs:
           # Source tarball produced by 'make dist' (tarname is 'flux').
           tarball="flux-${VERSION}.tar.gz"
           if [ ! -f "$tarball" ]; then
-            # Fall back to whatever single tarball make dist produced.
-            tarball="$(ls flux-*.tar.gz | head -n1)"
+            # A missing exact name means a '+g<sha>' suffix (HEAD != tag): the
+            # release is version-skewed, so abort instead of publishing it.
+            echo "Expected $tarball but make dist produced: $(ls flux-*.tar.gz 2>/dev/null)" >&2
+            exit 1
           fi
           cp "$tarball" "artifacts/flux-${VERSION}.tar.gz"
 

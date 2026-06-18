@@ -1,0 +1,86 @@
+name: Release on merge
+
+# When a release PR (a VERSION bump) lands on master, tag it and publish the
+# GitHub Release and Cloudsmith packages by reusing release.yml.
+on:
+  push:
+    branches: [master]
+    paths:
+      - VERSION
+
+permissions:
+  contents: write
+
+# Serialize release runs so two quick merges can't publish the same version twice.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      should_release: ${{ steps.v.outputs.should_release }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Read version and check for an existing release
+        id: v
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # VERSION line 1 is '<version> <RELDATE>'; take the version field.
+          version="$(head -n1 VERSION | cut -d' ' -f1)"
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "VERSION line 1 is not a clean X.Y.Z: '$version'" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v${version}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "Release v${version} already exists; skipping."
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  tag:
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create and push the version tag
+        env:
+          VERSION_NUM: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Tag before the build so configure's version-gen resolves a clean
+          # X.Y.Z (HEAD == tag commit) instead of appending a +g<sha> suffix.
+          tag="v${VERSION_NUM}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            # Re-run is fine only if the tag is already at this commit; a tag at
+            # a different commit means a mismatched/aborted release. Fail loudly.
+            existing="$(git rev-parse "refs/tags/${tag}^{commit}")"
+            head="$(git rev-parse HEAD)"
+            if [ "$existing" != "$head" ]; then
+              echo "Tag ${tag} is at ${existing} but HEAD is ${head}; refusing a mismatched release" >&2
+              exit 1
+            fi
+            echo "Tag ${tag} already at HEAD; nothing to do."
+            exit 0
+          fi
+          git tag "$tag"
+          git push origin "$tag"
+
+  release:
+    needs: [check, tag]
+    if: needs.check.outputs.should_release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      version: ${{ needs.check.outputs.version }}
+    secrets: inherit
