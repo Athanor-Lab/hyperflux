@@ -40,6 +40,8 @@ AM_CFLAGS = $(WARN_CFLAGS) \
 if WITH_SSL
 flux_SOURCES += \
 	src/dn-match.c \
+	src/hls.c \
+	src/hls.h \
 	src/ssl.c \
 	src/ssl_verify.c
 AM_CFLAGS += $(SSL_CFLAGS)
@@ -50,3 +52,7 @@ flux_CC = $(PTHREAD_CC)
 
 AM_CPPFLAGS = -DLOCALEDIR=\""$(localedir)"\"
 AM_CPPFLAGS += -D_BSD_SOURCE -D_DEFAULT_SOURCE
+# HLS links the rest of flux (http_fetch, conf_t) and OpenSSL EVP; only hls.c
+# (built under WITH_SSL) reads this. The pure parsing/crypto half compiles
+# standalone without it for the unit test.
+AM_CPPFLAGS += -DHLS_HAVE_FLUX

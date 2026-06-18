@@ -426,7 +426,7 @@ http_decode(char *s)
 }
 
 #define HTTP_FETCH_READ 8192
-#define HTTP_FETCH_MAX_BODY (16 * 1024 * 1024)	/* cap page/API bodies at 16 MiB */
+#define HTTP_FETCH_MAX_BODY (16 * 1024 * 1024)	/* default cap for page/API bodies */
 
 /* Select the proxy for `host`, honoring conf->no_proxy. Mirrors conn_init. */
 static char *
@@ -451,9 +451,12 @@ http_fetch_proxy(conf_t *conf, const char *host)
 
 /* Read the body of an already-executed request into `body`, appending after a
  * NUL-terminated existing content (body->p[0] must be 0 on entry). Returns 0 on
- * success, negative on error. */
+ * success, negative on error. If `out_len` is non-NULL it receives the exact
+ * body byte count (needed for binary bodies that embed NUL). `max_body` caps
+ * the total body size to bound memory. */
 static int
-http_fetch_read_body(http_t *conn, abuf_t *body)
+http_fetch_read_body(http_t *conn, abuf_t *body, size_t *out_len,
+		     size_t max_body)
 {
 	size_t len = 0;
 
@@ -462,8 +465,8 @@ http_fetch_read_body(http_t *conn, abuf_t *body)
 			size_t ncap = body->len ? body->len * 2 : HTTP_FETCH_READ * 2;
 			while (ncap < len + HTTP_FETCH_READ + 1)
 				ncap *= 2;
-			if (ncap > HTTP_FETCH_MAX_BODY)
-				ncap = HTTP_FETCH_MAX_BODY;
+			if (ncap > max_body)
+				ncap = max_body;
 			if (ncap < len + HTTP_FETCH_READ + 1) {
 				fprintf(stderr, _("Fetched body too large.\n"));
 				return -1;
@@ -481,19 +484,23 @@ http_fetch_read_body(http_t *conn, abuf_t *body)
 		len += (size_t)n;
 	}
 	body->p[len] = 0;
+	if (out_len)
+		*out_len = len;
 	return 0;
 }
 
 int
-http_fetch(conf_t *conf, const char *url, const char *const *headers,
-	   size_t nheaders, abuf_t *body)
+http_fetch_max(conf_t *conf, const char *url, const char *const *headers,
+	       size_t nheaders, abuf_t *body, size_t *out_len, size_t max_body)
 {
 	conn_t conn[1];
 	int ret = -1;
 	int redirects = 0;
 	char cur[MAX_STRING];
 
-	if (!conf || !url || !body)
+	if (out_len)
+		*out_len = 0;
+	if (!conf || !url || !body || max_body == 0)
 		return -1;
 	if (strlen(url) >= sizeof(cur))
 		return -1;
@@ -623,7 +630,7 @@ http_fetch(conf_t *conf, const char *url, const char *const *headers,
 			return -1;
 		}
 		*body->p = 0;
-		ret = http_fetch_read_body(h, body);
+		ret = http_fetch_read_body(h, body, out_len, max_body);
 		if (ret < 0)
 			abuf_setup(body, ABUF_FREE);
 
@@ -632,4 +639,20 @@ http_fetch(conf_t *conf, const char *url, const char *const *headers,
 		abuf_setup(h->headers, ABUF_FREE);
 		return ret;
 	}
+}
+
+int
+http_fetch_len(conf_t *conf, const char *url, const char *const *headers,
+	       size_t nheaders, abuf_t *body, size_t *out_len)
+{
+	return http_fetch_max(conf, url, headers, nheaders, body, out_len,
+			      HTTP_FETCH_MAX_BODY);
+}
+
+int
+http_fetch(conf_t *conf, const char *url, const char *const *headers,
+	   size_t nheaders, abuf_t *body)
+{
+	return http_fetch_max(conf, url, headers, nheaders, body, NULL,
+			      HTTP_FETCH_MAX_BODY);
 }
