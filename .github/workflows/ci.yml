@@ -86,6 +86,18 @@ jobs:
           echo "${out}"
           echo "${out}" | grep -q '^OK: all'
 
+      - name: Unit test (scan)
+        run: |
+          set -euo pipefail
+          # Page scanner over saved HTML fixtures (no network). SCAN_HAVE_HLS
+          # pulls in the pure half of hls.c for HLS candidate durations.
+          "${CC}" -D_DEFAULT_SOURCE -DSCAN_HAVE_HLS -Wall -Wextra -g \
+            src/scan.c src/extractor.c src/hls.c src/test_scan.c -lcrypto \
+            -o /tmp/test_scan
+          out="$(/tmp/test_scan)"
+          echo "${out}"
+          echo "${out}" | grep -q '^OK: all'
+
       - name: Smoke test (localhost glob download)
         run: |
           set -euo pipefail
@@ -261,6 +273,73 @@ jobs:
 
           echo "HLS e2e OK: AES-128 ts byte-exact + mp4 remux valid"
 
+      - name: Scan e2e (localhost --extract-scan --yes config generation)
+        run: |
+          set -euo pipefail
+
+          flux="${GITHUB_WORKSPACE}/flux"
+          test -x "${flux}"
+
+          srvdir="$(mktemp -d)"
+          workdir="$(mktemp -d)"
+          server_pid=""
+          cleanup() {
+            if [ -n "${server_pid}" ] && kill -0 "${server_pid}" 2>/dev/null; then
+              kill "${server_pid}" 2>/dev/null || true
+              wait "${server_pid}" 2>/dev/null || true
+            fi
+            rm -rf "${srvdir}" "${workdir}"
+          }
+          trap cleanup EXIT
+
+          # A small episode-like page embedding a direct mp4 via <source> and
+          # og:video, plus a real payload at that URL so the size probe gets a
+          # Content-Length. Plain shell heredoc: no Python indentation traps.
+          mkdir -p "${srvdir}/media"
+          cat > "${srvdir}/watch.html" <<'HTML'
+          <!doctype html><html><head>
+          <meta property="og:video" content="/media/episode-7.mp4">
+          </head><body>
+          <div id="player"><video controls>
+          <source src="/media/episode-7.mp4" type="video/mp4">
+          </video></div>
+          </body></html>
+          HTML
+          head -c 1048576 /dev/urandom > "${srvdir}/media/episode-7.mp4"
+
+          port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+          python3 -m http.server "${port}" \
+            --bind 127.0.0.1 --directory "${srvdir}" >/dev/null 2>&1 &
+          server_pid=$!
+          for _ in $(seq 1 50); do
+            if python3 -c "import socket,sys; s=socket.socket(); s.settimeout(0.2); sys.exit(0 if s.connect_ex(('127.0.0.1', ${port}))==0 else 1)"; then
+              break
+            fi
+            sleep 0.2
+          done
+
+          # Non-interactive: auto-pick the top candidate, write the config out.
+          cfg="${workdir}/gen.conf"
+          "${flux}" --extract-scan "http://127.0.0.1:${port}/watch.html" \
+            --yes -o "${cfg}"
+          echo "=== generated config ==="
+          cat "${cfg}"
+
+          # Assert the generated config has the expected directives and that the
+          # output line carries the resolved (absolute) media URL.
+          want="http://127.0.0.1:${port}/media/episode-7.mp4"
+          grep -qE '^name '  "${cfg}" || { echo "missing name" >&2; exit 1; }
+          grep -qE '^match ' "${cfg}" || { echo "missing match" >&2; exit 1; }
+          grep -qF "output ${want}" "${cfg}" \
+            || { echo "output is not the resolved media URL" >&2; exit 1; }
+
+          # The same scan to stdout (no -o) must also contain the output line.
+          "${flux}" --extract-scan "http://127.0.0.1:${port}/watch.html" --yes \
+            | grep -qF "output ${want}" \
+            || { echo "stdout config missing output" >&2; exit 1; }
+
+          echo "Scan e2e OK: --extract-scan --yes emitted a valid config"
+
   sanitizers:
     name: sanitizers
     runs-on: ubuntu-latest
@@ -305,5 +384,19 @@ jobs:
           export ASAN_OPTIONS=detect_leaks=1:abort_on_error=1
           export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
           out="$(/tmp/test_hls_san)"
+          echo "${out}"
+          echo "${out}" | grep -q '^OK: all'
+
+      - name: ASan/UBSan unit test (scan)
+        run: |
+          set -euo pipefail
+          # Page scanner over HTML fixtures + hls (durations) + extractor.
+          clang -D_DEFAULT_SOURCE -DSCAN_HAVE_HLS -Wall -Wextra -g \
+            -fsanitize=address,undefined -fno-sanitize-recover=all \
+            src/scan.c src/extractor.c src/hls.c src/test_scan.c -lcrypto \
+            -o /tmp/test_scan_san
+          export ASAN_OPTIONS=detect_leaks=1:abort_on_error=1
+          export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
+          out="$(/tmp/test_scan_san)"
           echo "${out}"
           echo "${out}" | grep -q '^OK: all'

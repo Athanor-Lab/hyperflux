@@ -64,6 +64,7 @@ int http_connect(http_t *conn, int proto, char *proxy, char *host, int port,
 		 char *user, char *pass, unsigned io_timeout);
 void http_disconnect(http_t *conn);
 void http_get(http_t *conn, char *lurl);
+void http_request(http_t *conn, const char *method, char *lurl);
 #ifdef __GNUC__
 __attribute__((format(printf, 2, 3)))
 #endif /* __GNUC__ */
@@ -101,5 +102,11 @@ int http_fetch_len(conf_t *conf, const char *url, const char *const *headers,
 int http_fetch_max(conf_t *conf, const char *url, const char *const *headers,
 		   size_t nheaders, abuf_t *body, size_t *out_len,
 		   size_t max_body);
+
+/* Probe a direct file's size via a HEAD request, reading Content-Length from
+ * the response without downloading the body. Follows redirects. Returns 0 with
+ * *out_size set (>= 0) on success, -1 when the server omits Content-Length or on
+ * any error, so callers can fall back to a body-based probe. */
+int http_probe_len(conf_t *conf, const char *url, long long *out_size);
 
 #endif				/* FLUX_HTTP_H */
