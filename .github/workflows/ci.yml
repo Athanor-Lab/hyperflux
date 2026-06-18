@@ -64,6 +64,16 @@ jobs:
           echo "${out}"
           echo "${out}" | grep -q '^OK: all'
 
+      - name: Unit test (extractor)
+        run: |
+          set -euo pipefail
+          # Pure module, no autotools needed; built with the matrix compiler.
+          "${CC}" -D_DEFAULT_SOURCE -Wall -Wextra -g \
+            src/extractor.c src/test_extractor.c -o /tmp/test_extractor
+          out="$(/tmp/test_extractor)"
+          echo "${out}"
+          echo "${out}" | grep -q '^OK: all'
+
       - name: Smoke test (localhost glob download)
         run: |
           set -euo pipefail
@@ -149,5 +159,18 @@ jobs:
           export ASAN_OPTIONS=detect_leaks=1:abort_on_error=1
           export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
           out="$(/tmp/test_url_glob_san)"
+          echo "${out}"
+          echo "${out}" | grep -q '^OK: all'
+
+      - name: ASan/UBSan unit test (extractor)
+        run: |
+          set -euo pipefail
+          # Pure module: no autotools needed, fast under sanitizers.
+          clang -D_DEFAULT_SOURCE -Wall -Wextra -g \
+            -fsanitize=address,undefined -fno-sanitize-recover=all \
+            src/extractor.c src/test_extractor.c -o /tmp/test_extractor_san
+          export ASAN_OPTIONS=detect_leaks=1:abort_on_error=1
+          export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
+          out="$(/tmp/test_extractor_san)"
           echo "${out}"
           echo "${out}" | grep -q '^OK: all'

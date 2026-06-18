@@ -75,4 +75,17 @@ off_t http_size(http_t *conn);
 off_t http_size_from_range(http_t *conn);
 void http_decode(char *s);
 
+/* Perform a GET to `url`, following redirects, and read the full response body
+ * into `body` (an abuf_t the caller must abuf_setup(.,ABUF_FREE) afterwards).
+ * `headers` is an array of `nheaders` "Key: Value" strings appended verbatim
+ * (no CRLF). Returns 0 on success (2xx with body), negative on any failure.
+ * For small page/API bodies only, never the media download itself.
+ *
+ * Sends "Connection: close" and reads until EOF. Limitation: a chunked
+ * Transfer-Encoding body is returned raw (chunk framing not stripped); the
+ * page/API endpoints this targets reply with Content-Length. The body is
+ * capped at 16 MiB. */
+int http_fetch(conf_t *conf, const char *url, const char *const *headers,
+	       size_t nheaders, abuf_t *body);
+
 #endif				/* FLUX_HTTP_H */

@@ -424,3 +424,212 @@ http_decode(char *s)
 	} while (*s == '%');
 	*p = 0;
 }
+
+#define HTTP_FETCH_READ 8192
+#define HTTP_FETCH_MAX_BODY (16 * 1024 * 1024)	/* cap page/API bodies at 16 MiB */
+
+/* Select the proxy for `host`, honoring conf->no_proxy. Mirrors conn_init. */
+static char *
+http_fetch_proxy(conf_t *conf, const char *host)
+{
+	char *proxy = conf->http_proxy;
+
+	if (*conf->http_proxy == 0)
+		return NULL;
+	if (*conf->no_proxy == 0)
+		return proxy;
+
+	/* Walk the 0-separated no_proxy list; a substring hit disables proxy. */
+	const char *entry = conf->no_proxy;
+	while (*entry) {
+		if (strstr(host, entry) != NULL)
+			return NULL;
+		entry += strlen(entry) + 1;
+	}
+	return proxy;
+}
+
+/* Read the body of an already-executed request into `body`, appending after a
+ * NUL-terminated existing content (body->p[0] must be 0 on entry). Returns 0 on
+ * success, negative on error. */
+static int
+http_fetch_read_body(http_t *conn, abuf_t *body)
+{
+	size_t len = 0;
+
+	for (;;) {
+		if (len + HTTP_FETCH_READ + 1 > body->len) {
+			size_t ncap = body->len ? body->len * 2 : HTTP_FETCH_READ * 2;
+			while (ncap < len + HTTP_FETCH_READ + 1)
+				ncap *= 2;
+			if (ncap > HTTP_FETCH_MAX_BODY)
+				ncap = HTTP_FETCH_MAX_BODY;
+			if (ncap < len + HTTP_FETCH_READ + 1) {
+				fprintf(stderr, _("Fetched body too large.\n"));
+				return -1;
+			}
+			if (abuf_setup(body, ncap) < 0) {
+				fprintf(stderr, "Out of memory\n");
+				return -1;
+			}
+		}
+		ssize_t n = tcp_read(&conn->tcp, body->p + len, HTTP_FETCH_READ);
+		if (n < 0)
+			return -1;
+		if (n == 0)
+			break;
+		len += (size_t)n;
+	}
+	body->p[len] = 0;
+	return 0;
+}
+
+int
+http_fetch(conf_t *conf, const char *url, const char *const *headers,
+	   size_t nheaders, abuf_t *body)
+{
+	conn_t conn[1];
+	int ret = -1;
+	int redirects = 0;
+	char cur[MAX_STRING];
+
+	if (!conf || !url || !body)
+		return -1;
+	if (strlen(url) >= sizeof(cur))
+		return -1;
+	strlcpy(cur, url, sizeof(cur));
+
+	for (;;) {
+		memset(conn, 0, sizeof(conn));
+		conn->conf = conf;
+
+		if (!conn_set(conn, cur))
+			return -1;
+		if (!is_proto_http(conn->proto)) {
+			fprintf(stderr, _("Only http(s) is supported for fetch.\n"));
+			return -1;
+		}
+
+		char *proxy = http_fetch_proxy(conf, conn->host);
+
+		http_t *h = conn->http;
+		h->local_if = NULL;
+		h->tcp.ai_family = conf->ai_family;
+		if (abuf_setup(h->request, 2048) < 0 ||
+		    abuf_setup(h->headers, 1024) < 0) {
+			abuf_setup(h->request, ABUF_FREE);
+			abuf_setup(h->headers, ABUF_FREE);
+			return -1;
+		}
+
+		if (!http_connect(h, conn->proto, proxy, conn->host, conn->port,
+				  conn->user, conn->pass, conf->io_timeout)) {
+			abuf_setup(h->request, ABUF_FREE);
+			abuf_setup(h->headers, ABUF_FREE);
+			return -1;
+		}
+
+		/* Build the GET (full-body request: no Range). */
+		char path[MAX_STRING * 2];
+		snprintf(path, sizeof(path), "%s%s", conn->dir, conn->file);
+		h->firstbyte = -1;
+		h->lastbyte = 0;
+		http_get(h, path);
+		http_addheader(h, "%s", conf->add_header[HDR_USER_AGENT]);
+		for (size_t i = 0; i < nheaders; i++)
+			http_addheader(h, "%s", headers[i]);
+		http_addheader(h, "Connection: close");
+
+		if (!http_exec(h)) {
+			http_disconnect(h);
+			abuf_setup(h->request, ABUF_FREE);
+			abuf_setup(h->headers, ABUF_FREE);
+			return -1;
+		}
+
+		/* Follow 3xx redirects (resolve relative Locations). */
+		if (h->status / 100 == 3) {
+			const char *loc = http_header(h, "Location:");
+			if (!loc) {
+				http_disconnect(h);
+				abuf_setup(h->request, ABUF_FREE);
+				abuf_setup(h->headers, ABUF_FREE);
+				return -1;
+			}
+			char next[MAX_STRING];
+			if (sscanf(loc, "%1023s", next) != 1) {
+				http_disconnect(h);
+				abuf_setup(h->request, ABUF_FREE);
+				abuf_setup(h->headers, ABUF_FREE);
+				return -1;
+			}
+			const char *scheme = scheme_from_proto(conn->proto);
+			/* Scheme name without "://" (e.g. "https"). */
+			int scheme_name_len =
+				(int)(strstr(scheme, "://") - scheme);
+			char abs[MAX_STRING * 4];
+			int an;
+			if (next[0] == '/' && next[1] == '/') {
+				/* Scheme-relative: keep our scheme. */
+				an = snprintf(abs, sizeof(abs), "%.*s:%s",
+					      scheme_name_len, scheme, next);
+			} else if (next[0] == '/') {
+				/* Absolute path on the same authority. */
+				an = snprintf(abs, sizeof(abs), "%s%s:%i%s",
+					      scheme, conn->host, conn->port,
+					      next);
+			} else if (strstr(next, "://") == NULL) {
+				/* Relative path: append under the current dir. */
+				an = snprintf(abs, sizeof(abs), "%s%s:%i%s%s",
+					      scheme, conn->host, conn->port,
+					      conn->dir, next);
+			} else {
+				/* Already absolute. */
+				an = snprintf(abs, sizeof(abs), "%s", next);
+			}
+
+			http_disconnect(h);
+			abuf_setup(h->request, ABUF_FREE);
+			abuf_setup(h->headers, ABUF_FREE);
+
+			if (an < 0 || (size_t)an >= sizeof(abs)) {
+				fprintf(stderr, _("Redirect URL too long.\n"));
+				return -1;
+			}
+			if (++redirects > conf->max_redirect) {
+				fprintf(stderr, _("Too many redirects.\n"));
+				return -1;
+			}
+			if (strlen(abs) >= sizeof(cur)) {
+				fprintf(stderr, _("Redirect URL too long.\n"));
+				return -1;
+			}
+			strlcpy(cur, abs, sizeof(cur));
+			continue;
+		}
+
+		if (h->status / 100 != 2) {
+			fprintf(stderr, _("Fetch failed: HTTP %d\n"), h->status);
+			http_disconnect(h);
+			abuf_setup(h->request, ABUF_FREE);
+			abuf_setup(h->headers, ABUF_FREE);
+			return -1;
+		}
+
+		if (abuf_setup(body, HTTP_FETCH_READ * 2) < 0) {
+			http_disconnect(h);
+			abuf_setup(h->request, ABUF_FREE);
+			abuf_setup(h->headers, ABUF_FREE);
+			return -1;
+		}
+		*body->p = 0;
+		ret = http_fetch_read_body(h, body);
+		if (ret < 0)
+			abuf_setup(body, ABUF_FREE);
+
+		http_disconnect(h);
+		abuf_setup(h->request, ABUF_FREE);
+		abuf_setup(h->headers, ABUF_FREE);
+		return ret;
+	}
+}
