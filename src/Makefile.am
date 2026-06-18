@@ -22,11 +22,15 @@ flux_SOURCES = \
 	src/http.c \
 	src/http.h \
 	src/random.c \
+	src/scan.c \
+	src/scan.h \
 	src/search.c \
 	src/search.h \
 	src/ssl.h \
 	src/tcp.c \
 	src/tcp.h \
+	src/tui.c \
+	src/tui.h \
 	src/url_glob.c \
 	src/url_glob.h \
 	src/text.c
@@ -56,3 +60,9 @@ AM_CPPFLAGS += -D_BSD_SOURCE -D_DEFAULT_SOURCE
 # (built under WITH_SSL) reads this. The pure parsing/crypto half compiles
 # standalone without it for the unit test.
 AM_CPPFLAGS += -DHLS_HAVE_FLUX
+
+# The scanner's HLS duration enrichment links the pure half of hls.c, which is
+# only compiled with SSL; gate those calls so the non-SSL build still links.
+if WITH_SSL
+AM_CPPFLAGS += -DSCAN_HAVE_HLS
+endif

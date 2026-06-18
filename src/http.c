@@ -154,6 +154,15 @@ http_disconnect(http_t *conn)
 void
 http_get(http_t *conn, char *lurl)
 {
+	http_request(conn, "GET", lurl);
+}
+
+/* Build a request for `method` ("GET" or "HEAD") into conn->request. Shared by
+ * http_get and the HEAD size probe so request-line/header construction stays in
+ * one place. */
+void
+http_request(http_t *conn, const char *method, char *lurl)
+{
 	const char *prefix = "", *postfix = "";
 
 	// If host is ipv6 literal add square brackets
@@ -166,15 +175,15 @@ http_get(http_t *conn, char *lurl)
 	if (conn->proxy) {
 		const char *proto = scheme_from_proto(conn->proto);
 		if (is_default_port(conn->proto, conn->port)) {
-			http_addheader(conn, "GET %s%s%s%s%s HTTP/1.0", proto,
-					prefix, conn->host, postfix, lurl);
+			http_addheader(conn, "%s %s%s%s%s%s HTTP/1.0", method,
+					proto, prefix, conn->host, postfix, lurl);
 		} else {
-			http_addheader(conn, "GET %s%s%s%s:%i%s HTTP/1.0",
-					proto, prefix, conn->host, postfix,
+			http_addheader(conn, "%s %s%s%s%s:%i%s HTTP/1.0",
+					method, proto, prefix, conn->host, postfix,
 					conn->port, lurl);
 		}
 	} else {
-		http_addheader(conn, "GET %s HTTP/1.0", lurl);
+		http_addheader(conn, "%s %s HTTP/1.0", method, lurl);
 		if (is_default_port(conn->proto, conn->port)) {
 			http_addheader(conn, "Host: %s%s%s", prefix,
 					conn->host, postfix);
@@ -655,4 +664,125 @@ http_fetch(conf_t *conf, const char *url, const char *const *headers,
 {
 	return http_fetch_max(conf, url, headers, nheaders, body, NULL,
 			      HTTP_FETCH_MAX_BODY);
+}
+
+/* Probe a direct file's size via HEAD, reading Content-Length from the response
+ * headers without downloading the body. Follows redirects like http_fetch_max.
+ * Returns 0 with *out_size set (>= 0) when the server reports Content-Length, -1
+ * otherwise (incl. missing/negative length) so callers can fall back. */
+int
+http_probe_len(conf_t *conf, const char *url, long long *out_size)
+{
+	conn_t conn[1];
+	int redirects = 0;
+	char cur[MAX_STRING];
+
+	if (out_size)
+		*out_size = -1;
+	if (!conf || !url)
+		return -1;
+	if (strlen(url) >= sizeof(cur))
+		return -1;
+	strlcpy(cur, url, sizeof(cur));
+
+	for (;;) {
+		memset(conn, 0, sizeof(conn));
+		conn->conf = conf;
+
+		if (!conn_set(conn, cur))
+			return -1;
+		if (!is_proto_http(conn->proto))
+			return -1;
+
+		char *proxy = http_fetch_proxy(conf, conn->host);
+
+		http_t *h = conn->http;
+		h->local_if = NULL;
+		h->tcp.ai_family = conf->ai_family;
+		if (abuf_setup(h->request, 2048) < 0 ||
+		    abuf_setup(h->headers, 1024) < 0) {
+			abuf_setup(h->request, ABUF_FREE);
+			abuf_setup(h->headers, ABUF_FREE);
+			return -1;
+		}
+
+		if (!http_connect(h, conn->proto, proxy, conn->host, conn->port,
+				  conn->user, conn->pass, conf->io_timeout)) {
+			abuf_setup(h->request, ABUF_FREE);
+			abuf_setup(h->headers, ABUF_FREE);
+			return -1;
+		}
+
+		char path[MAX_STRING * 2];
+		snprintf(path, sizeof(path), "%s%s", conn->dir, conn->file);
+		h->firstbyte = -1;
+		h->lastbyte = 0;
+		http_request(h, "HEAD", path);
+		http_addheader(h, "%s", conf->add_header[HDR_USER_AGENT]);
+		http_addheader(h, "Connection: close");
+
+		if (!http_exec(h)) {
+			http_disconnect(h);
+			abuf_setup(h->request, ABUF_FREE);
+			abuf_setup(h->headers, ABUF_FREE);
+			return -1;
+		}
+
+		/* Follow 3xx redirects (resolve relative Locations). */
+		if (h->status / 100 == 3) {
+			const char *loc = http_header(h, "Location:");
+			char next[MAX_STRING];
+			if (!loc || sscanf(loc, "%1023s", next) != 1) {
+				http_disconnect(h);
+				abuf_setup(h->request, ABUF_FREE);
+				abuf_setup(h->headers, ABUF_FREE);
+				return -1;
+			}
+			const char *scheme = scheme_from_proto(conn->proto);
+			int scheme_name_len =
+				(int)(strstr(scheme, "://") - scheme);
+			char abs[MAX_STRING * 4];
+			int an;
+			if (next[0] == '/' && next[1] == '/') {
+				an = snprintf(abs, sizeof(abs), "%.*s:%s",
+					      scheme_name_len, scheme, next);
+			} else if (next[0] == '/') {
+				an = snprintf(abs, sizeof(abs), "%s%s:%i%s",
+					      scheme, conn->host, conn->port,
+					      next);
+			} else if (strstr(next, "://") == NULL) {
+				an = snprintf(abs, sizeof(abs), "%s%s:%i%s%s",
+					      scheme, conn->host, conn->port,
+					      conn->dir, next);
+			} else {
+				an = snprintf(abs, sizeof(abs), "%s", next);
+			}
+
+			http_disconnect(h);
+			abuf_setup(h->request, ABUF_FREE);
+			abuf_setup(h->headers, ABUF_FREE);
+
+			if (an < 0 || (size_t)an >= sizeof(abs))
+				return -1;
+			if (++redirects > conf->max_redirect)
+				return -1;
+			if (strlen(abs) >= sizeof(cur))
+				return -1;
+			strlcpy(cur, abs, sizeof(cur));
+			continue;
+		}
+
+		int ok = h->status / 100 == 2;
+		off_t size = ok ? http_size(h) : -1;
+
+		http_disconnect(h);
+		abuf_setup(h->request, ABUF_FREE);
+		abuf_setup(h->headers, ABUF_FREE);
+
+		if (!ok || size < 0)
+			return -1;
+		if (out_size)
+			*out_size = (long long)size;
+		return 0;
+	}
 }

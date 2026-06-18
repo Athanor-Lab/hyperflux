@@ -52,6 +52,8 @@
 #include "flux.h"
 #include "url_glob.h"
 #include "extractor.h"
+#include "scan.h"
+#include "tui.h"
 #ifdef HAVE_SSL
 #include "hls.h"
 #endif
@@ -80,6 +82,8 @@ int run = 1;
 #define EXTRACT_LIST_OPT	258
 #define QUALITY_OPT	259
 #define MUX_OPT		260
+#define EXTRACT_SCAN_OPT	261
+#define YES_OPT		262
 
 #ifdef NOGETOPTLONG
 #define getopt_long(a, b, c, d, e) getopt(a, b, c)
@@ -107,6 +111,8 @@ static struct option flux_options[] = {
 	{"timeout",         1,      NULL, 'T'},
 	{"extract",         1,      NULL, EXTRACT_OPT},
 	{"extract-list",    0,      NULL, EXTRACT_LIST_OPT},
+	{"extract-scan",    1,      NULL, EXTRACT_SCAN_OPT},
+	{"yes",             0,      NULL, YES_OPT},
 	{"quality",         1,      NULL, QUALITY_OPT},
 	{"mux",             1,      NULL, MUX_OPT},
 	{NULL,              0,      NULL, 0}
@@ -156,6 +162,145 @@ extract_http_fetch(const char *url, const ext_header_t *headers,
 	return ret;
 }
 
+/* Probe adapter for the scanner: report a direct file's byte size. Prefer a
+ * HEAD that reads Content-Length without downloading the body (lighter, and the
+ * only correct signal for files past http_fetch's 16 MiB cap). Fall back to a
+ * capped body fetch only when the server omits Content-Length, treating a body
+ * that hit the cap as size-unknown rather than reporting a truncated length.
+ * Returns 0 with *out_size set on success, -1 on failure. userdata is conf_t. */
+static int
+extract_size_probe(const char *url, long long *out_size, void *userdata)
+{
+	conf_t *conf = userdata;
+	abuf_t body[1] = { { NULL, 0 } };
+	size_t blen = 0;
+
+	if (out_size)
+		*out_size = -1;
+
+	if (http_probe_len(conf, url, out_size) == 0)
+		return 0;
+
+	/* Fallback: server gave no usable Content-Length. http_fetch_len fails
+	 * (size-unknown) when the body exceeds its 16 MiB cap, so a success here
+	 * means blen is the file's true size. */
+	if (http_fetch_len(conf, url, NULL, 0, body, &blen) != 0 || !body->p) {
+		abuf_setup(body, ABUF_FREE);
+		return -1;
+	}
+	abuf_setup(body, ABUF_FREE);
+	if (out_size)
+		*out_size = (long long)blen;
+	return 0;
+}
+
+/* Run --extract-scan: scan `page_url`, optionally disambiguate via the TUI, and
+ * emit a generated config to `out_file` (NULL/empty -> stdout). `auto_yes`
+ * skips the TUI and picks the top-ranked candidate. Returns 0 on success, 1 on
+ * any error (matching the caller's exit-code convention). */
+static int
+run_extract_scan(conf_t *conf, const char *page_url, const char *out_file,
+		 int auto_yes)
+{
+	char *err = NULL;
+	scan_result_t *r = scan_page(page_url, extract_http_fetch,
+				     extract_size_probe, conf, &err);
+	if (!r) {
+		fprintf(stderr, _("flux: scan failed: %s\n"),
+			err ? err : "unknown error");
+		free(err);
+		return 1;
+	}
+
+	int chosen = -1;	/* -1 -> emit the top-ranked candidate */
+
+	/* Ambiguous (>1 candidate) and interactive without --yes: ask the user.
+	 * The TUI itself degrades to a numbered prompt on a non-TTY. With --yes
+	 * or a single candidate we keep the scorer's top pick. */
+	if (!auto_yes && r->ncands > 1) {
+		tui_item_t *items = calloc(r->ncands, sizeof(*items));
+		char (*details)[256] = calloc(r->ncands, sizeof(*details));
+		if (!items || !details) {
+			free(items);
+			free(details);
+			scan_result_free(r);
+			fprintf(stderr, _("flux: out of memory\n"));
+			return 1;
+		}
+		for (size_t i = 0; i < r->ncands; i++) {
+			const scan_candidate_t *c = &r->cands[i];
+			int o = 0;
+			o += snprintf(details[i] + o, sizeof(details[i]) - o,
+				      "%s score=%.0f",
+				      c->kind == SCAN_KIND_HLS ? "hls" : "file",
+				      c->score);
+			if (c->duration > 0 && o >= 0 &&
+			    (size_t)o < sizeof(details[i]))
+				o += snprintf(details[i] + o,
+					      sizeof(details[i]) - o,
+					      " dur=%.0fs", c->duration);
+			if (c->size > 0 && o >= 0 && (size_t)o < sizeof(details[i]))
+				o += snprintf(details[i] + o,
+					      sizeof(details[i]) - o,
+					      " size=%lldB", c->size);
+			if (c->height > 0 && o >= 0 &&
+			    (size_t)o < sizeof(details[i]))
+				o += snprintf(details[i] + o,
+					      sizeof(details[i]) - o,
+					      " %dx%d", c->width, c->height);
+			if (c->ad_host && o >= 0 && (size_t)o < sizeof(details[i]))
+				snprintf(details[i] + o, sizeof(details[i]) - o,
+					 " [ad]");
+			items[i].label = c->url;
+			items[i].detail = details[i];
+		}
+		chosen = tui_select_one(_("Select the media stream to extract:"),
+					items, r->ncands);
+		free(items);
+		free(details);
+		if (chosen < 0) {	/* user cancelled */
+			scan_result_free(r);
+			fprintf(stderr, _("flux: scan cancelled.\n"));
+			return 1;
+		}
+	}
+
+	/* Non-TTY + ambiguous + no --yes: scan_page still ran, but we must not
+	 * silently guess. tui_select_one's fallback already handled the prompt
+	 * above; if it returned a valid index we proceed. */
+
+	FILE *out = stdout;
+	int close_out = 0;
+	if (out_file && *out_file) {
+		out = fopen(out_file, "w");
+		if (!out) {
+			fprintf(stderr, _("flux: cannot write config to %s: %s\n"),
+				out_file, strerror(errno));
+			scan_result_free(r);
+			return 1;
+		}
+		close_out = 1;
+	}
+
+	int er = scan_emit_config(r, chosen, out);
+	if (close_out) {
+		if (fclose(out) != 0)
+			er = -1;
+	} else {
+		fflush(out);
+	}
+	scan_result_free(r);
+
+	if (er != 0) {
+		fprintf(stderr, _("flux: failed to write generated config.\n"));
+		return 1;
+	}
+	if (close_out && conf->verbose >= 0)
+		fprintf(stderr, _("flux: wrote extractor config to %s\n"),
+			out_file);
+	return 0;
+}
+
 /**
  * Unified percentage calculation for all progress indicators.
  */
@@ -177,6 +322,8 @@ main(int argc, char *argv[])
 	char *stdin_url = NULL;
 	const char *single = NULL;
 	const char *extract_name = NULL;	/* --extract <name> override */
+	const char *scan_url = NULL;		/* --extract-scan <url> target */
+	int auto_yes = 0;			/* --yes: no prompts */
 	const char *hls_quality = NULL;		/* --quality best|worst|<height> */
 	const char *hls_mux = NULL;		/* --mux mp4|ts */
 
@@ -303,6 +450,12 @@ main(int argc, char *argv[])
 			extractor_list();
 			ret = 0;
 			goto free_conf;
+		case EXTRACT_SCAN_OPT:
+			scan_url = optarg;
+			break;
+		case YES_OPT:
+			auto_yes = 1;
+			break;
 		case QUALITY_OPT:
 			hls_quality = optarg;
 			break;
@@ -340,6 +493,14 @@ main(int argc, char *argv[])
 #ifdef HAVE_SSL
 	ssl_init(conf);
 #endif				/* HAVE_SSL */
+
+	/* --extract-scan carries its own URL and writes a config (to -o or
+	 * stdout) instead of downloading; handle it before the positional-URL
+	 * dispatch and exit. */
+	if (scan_url) {
+		ret = run_extract_scan(conf, scan_url, fn, auto_yes);
+		goto free_conf;
+	}
 
 	if (argc - optind == 0) {
 		print_help();
@@ -1007,6 +1168,8 @@ print_help(void)
 		 "--timeout=x\t\t-T x\tSet I/O and connection timeout\n"
 		 "--extract=name\t\t\tForce a named extractor config\n"
 		 "--extract-list\t\t\tList discovered extractor configs\n"
+		 "--extract-scan=url\t\tScan a page and emit a starter config\n"
+		 "--yes\t\t\t\tNon-interactive: auto-pick the top candidate\n"
 		 "--quality=q\t\t\tHLS variant: best|worst|<height> (default best)\n"
 		 "--mux=c\t\t\t\tHLS container: mp4|ts (default mp4 if ffmpeg)\n"
 		 "--version\t\t-V\tVersion information\n"
