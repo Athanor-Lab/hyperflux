@@ -1,5 +1,5 @@
-Hyperflux (unreleased)
-======================
+Hyperflux 2.1.0 (2026-06-19)
+============================
 
 --extract-scan now reaches players that sit a few clicks away. When the landing
 page has no direct media, flux follows internal watch/play/embed links a bounded
