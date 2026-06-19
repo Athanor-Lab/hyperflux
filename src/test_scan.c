@@ -122,7 +122,7 @@ test_direct_source(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     &site, &err);
+				     SCAN_DEFAULT_DEPTH, &site, &err);
 	CHECK(r != NULL, "(a) direct-source page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -177,7 +177,7 @@ test_hls_in_json(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     &site, &err);
+				     SCAN_DEFAULT_DEPTH, &site, &err);
 	CHECK(r != NULL, "(b) HLS-in-JSON page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -240,7 +240,7 @@ test_ad_vs_content(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     &site, &err);
+				     SCAN_DEFAULT_DEPTH, &site, &err);
 	CHECK(r != NULL, "(c) ad-vs-content page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -296,7 +296,7 @@ test_skeleton_when_no_media(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     &site, &err);
+				     SCAN_DEFAULT_DEPTH, &site, &err);
 	CHECK(r != NULL, "(d) animeworld-like page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -313,6 +313,286 @@ test_skeleton_when_no_media(void)
 		      "(d) explains the API case");
 		CHECK(strstr(cfg, "regex") != NULL,
 		      "(d) skeleton suggests an id-capture regex");
+		free(cfg);
+	}
+	scan_result_free(r);
+}
+
+/* ---- (e) media behind ONE hop -> multi-step config + roundtrip --------- */
+
+static void
+test_one_hop(void)
+{
+	/* Landing page has no media, only an <a href="/watch?file=XYZ">. The
+	 * /watch page carries the player JSON with the real mp4. */
+	static const struct kv pages[] = {
+		{ "https://watch.example.com/show",
+		  "<html><body>"
+		  "<a href=\"/watch?file=XYZ\">Watch now</a>"
+		  "</body></html>" },
+		{ "https://watch.example.com/watch?file=XYZ",
+		  "<html><body><div id=\"player\"></div>"
+		  "<script>var p = "
+		  "{\"file\":\"https://cdn.example.com/v/clip.mp4\"};</script>"
+		  "</body></html>" },
+	};
+	struct fake_site site = { pages, 2, NULL, 0 };
+
+	char *err = NULL;
+	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
+				     SCAN_DEFAULT_DEPTH, &site, &err);
+	CHECK(r != NULL, "(e) one-hop page scans");
+	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
+
+	CHECK(r->ncands >= 1, "(e) media found behind one hop");
+	if (r->ncands >= 1) {
+		CHECK(strcmp(r->cands[0].url,
+			     "https://cdn.example.com/v/clip.mp4") == 0,
+		      "(e) top candidate is the mp4");
+		CHECK(r->cands[0].nchain == 2, "(e) chain has two steps");
+		CHECK(r->cands[0].depth == 1, "(e) depth is one hop");
+	}
+
+	char *cfg = NULL;
+	CHECK(emit_to_string(r, -1, &cfg) == 0 && cfg, "(e) config emits");
+	if (cfg) {
+		CHECK(strstr(cfg, "get    page0 <- {url}") != NULL,
+		      "(e) first get reads {url}");
+		CHECK(strstr(cfg, "var    link0 <- page0 regex") != NULL,
+		      "(e) link0 captured from page0");
+		CHECK(strstr(cfg, "get    page1 <- {link0}") != NULL,
+		      "(e) page1 fetched from link0");
+		CHECK(strstr(cfg, "var    media <- page1 regex") != NULL,
+		      "(e) media captured from page1");
+		CHECK(strstr(cfg, "output {media}") != NULL,
+		      "(e) outputs {media}");
+
+		/* Roundtrip: the generated config must parse and run. */
+		char *perr = NULL;
+		extractor_t *ex = extractor_parse(cfg, "(gen)", &perr);
+		CHECK(ex != NULL, "(e) generated config parses");
+		if (!ex) { printf("  parse err: %s\n", perr ? perr : "(none)"); }
+		free(perr);
+		if (ex) {
+			char *media = NULL, *rerr = NULL;
+			int rc = extractor_run(ex, pages[0].url, fake_fetch,
+					       &site, &media, &rerr);
+			CHECK(rc == 0, "(e) generated config runs");
+			if (rc != 0)
+				printf("  run err: %s\n", rerr ? rerr : "(none)");
+			CHECK(media && strcmp(media,
+				"https://cdn.example.com/v/clip.mp4") == 0,
+			      "(e) run resolves the mp4");
+			free(media);
+			free(rerr);
+			extractor_free(ex);
+		}
+		free(cfg);
+	}
+	scan_result_free(r);
+}
+
+/* ---- (f) media behind TWO hops -> multi-step config + roundtrip -------- */
+
+static void
+test_two_hops(void)
+{
+	/* landing -> /embed/123 -> /player/abc with the media. */
+	static const struct kv pages[] = {
+		{ "https://watch.example.org/show",
+		  "<html><body>"
+		  "<a href=\"/embed/123\">go</a>"
+		  "</body></html>" },
+		{ "https://watch.example.org/embed/123",
+		  "<html><body>"
+		  "<a href=\"/player/abc\">play</a>"
+		  "</body></html>" },
+		{ "https://watch.example.org/player/abc",
+		  "<html><body><video controls>"
+		  "<source src=\"https://cdn.example.org/m/final.mp4\">"
+		  "</video></body></html>" },
+	};
+	struct fake_site site = { pages, 3, NULL, 0 };
+
+	char *err = NULL;
+	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
+				     SCAN_DEFAULT_DEPTH, &site, &err);
+	CHECK(r != NULL, "(f) two-hop page scans");
+	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
+
+	CHECK(r->ncands >= 1, "(f) media found behind two hops");
+	if (r->ncands >= 1) {
+		CHECK(strcmp(r->cands[0].url,
+			     "https://cdn.example.org/m/final.mp4") == 0,
+		      "(f) top candidate is the final mp4");
+		CHECK(r->cands[0].nchain == 3, "(f) chain has three steps");
+		CHECK(r->cands[0].depth == 2, "(f) depth is two hops");
+	}
+
+	char *cfg = NULL;
+	CHECK(emit_to_string(r, -1, &cfg) == 0 && cfg, "(f) config emits");
+	if (cfg) {
+		CHECK(strstr(cfg, "get    page0 <- {url}") != NULL,
+		      "(f) first get reads {url}");
+		CHECK(strstr(cfg, "get    page1 <- {link0}") != NULL,
+		      "(f) page1 from link0");
+		CHECK(strstr(cfg, "get    page2 <- {link1}") != NULL,
+		      "(f) page2 from link1");
+		CHECK(strstr(cfg, "var    media <- page2 regex") != NULL,
+		      "(f) media captured from page2");
+
+		char *perr = NULL;
+		extractor_t *ex = extractor_parse(cfg, "(gen)", &perr);
+		CHECK(ex != NULL, "(f) generated config parses");
+		if (!ex) { printf("  parse err: %s\n", perr ? perr : "(none)"); }
+		free(perr);
+		if (ex) {
+			char *media = NULL, *rerr = NULL;
+			int rc = extractor_run(ex, pages[0].url, fake_fetch,
+					       &site, &media, &rerr);
+			CHECK(rc == 0, "(f) generated config runs");
+			if (rc != 0)
+				printf("  run err: %s\n", rerr ? rerr : "(none)");
+			CHECK(media && strcmp(media,
+				"https://cdn.example.org/m/final.mp4") == 0,
+			      "(f) run resolves the final mp4");
+			free(media);
+			free(rerr);
+			extractor_free(ex);
+		}
+		free(cfg);
+	}
+	scan_result_free(r);
+}
+
+/* ---- (g) series index -> list + per-episode pipeline + roundtrip ------- */
+
+static void
+test_series(void)
+{
+	/* Landing page lists three /ep/N episodes; each episode page has a
+	 * direct <source> mp4. */
+	static const struct kv pages[] = {
+		{ "https://anime.example.net/series/foo",
+		  "<html><body>"
+		  "<a href=\"/ep/1\">Episode 1</a>"
+		  "<a href=\"/ep/2\">Episode 2</a>"
+		  "<a href=\"/ep/3\">Episode 3</a>"
+		  "</body></html>" },
+		{ "https://anime.example.net/ep/1",
+		  "<html><body><video><source "
+		  "src=\"https://cdn.example.net/e/ep1.mp4\"></video></body></html>" },
+		{ "https://anime.example.net/ep/2",
+		  "<html><body><video><source "
+		  "src=\"https://cdn.example.net/e/ep2.mp4\"></video></body></html>" },
+		{ "https://anime.example.net/ep/3",
+		  "<html><body><video><source "
+		  "src=\"https://cdn.example.net/e/ep3.mp4\"></video></body></html>" },
+	};
+	struct fake_site site = { pages, 4, NULL, 0 };
+
+	char *err = NULL;
+	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
+				     SCAN_DEFAULT_DEPTH, &site, &err);
+	CHECK(r != NULL, "(g) series page scans");
+	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
+
+	CHECK(r->is_series == 1, "(g) series detected");
+	CHECK(r->list_ere != NULL, "(g) list ERE set");
+	CHECK(r->ncands >= 1, "(g) sample episode media found");
+
+	char *cfg = NULL;
+	CHECK(emit_to_string(r, -1, &cfg) == 0 && cfg, "(g) config emits");
+	if (cfg) {
+		CHECK(strstr(cfg, "list   eps  <- page regex") != NULL,
+		      "(g) list directive present");
+		CHECK(strstr(cfg, "output {media}") != NULL,
+		      "(g) per-episode output present");
+
+		char *perr = NULL;
+		extractor_t *ex = extractor_parse(cfg, "(gen)", &perr);
+		CHECK(ex != NULL, "(g) generated config parses");
+		if (!ex) { printf("  parse err: %s\n", perr ? perr : "(none)"); }
+		free(perr);
+		if (ex) {
+			/* FIX 2: match must fire on the series LANDING page. */
+			CHECK(extractor_matches(ex, pages[0].url) == 1,
+			      "(g) config matches series landing URL");
+
+			CHECK(extractor_has_list(ex), "(g) config has a list");
+			char **urls = NULL;
+			size_t n = 0;
+			char *lerr = NULL;
+			int rc = extractor_list_episodes(ex, pages[0].url,
+				fake_fetch, &site, &urls, &n, &lerr);
+			CHECK(rc == 0 && n >= 3,
+			      "(g) list_episodes returns >= 3 episodes");
+			if (rc != 0)
+				printf("  list err: %s\n", lerr ? lerr : "(none)");
+			if (n >= 1)
+				CHECK(strcmp(urls[0],
+					"https://anime.example.net/ep/1") == 0,
+				      "(g) first episode URL resolved absolute");
+			free(lerr);
+
+			/* Per-episode run resolves epN.mp4 for episode 1. */
+			char *media = NULL, *rerr = NULL;
+			int rr = extractor_run(ex, "https://anime.example.net/ep/1",
+					       fake_fetch, &site, &media, &rerr);
+			CHECK(rr == 0 && media && strcmp(media,
+				"https://cdn.example.net/e/ep1.mp4") == 0,
+			      "(g) per-episode run resolves ep1.mp4");
+			if (rr != 0)
+				printf("  run err: %s\n", rerr ? rerr : "(none)");
+			free(media);
+			free(rerr);
+			extractor_free_urls(urls, n);
+			extractor_free(ex);
+		}
+		free(cfg);
+	}
+	scan_result_free(r);
+}
+
+/* ---- series with no reachable episode media (FIX 3: parseable skeleton) -- */
+
+static void
+test_series_no_media(void)
+{
+	/* Landing lists episodes but the episode pages are unreachable (fetch
+	 * fails), so no candidate chain is built.  The emitted config must still
+	 * parse cleanly (FIX 3). */
+	static const struct kv pages[] = {
+		{ "https://nomedia.example.org/show/bar",
+		  "<html><body>"
+		  "<a href=\"/ep/1\">Episode 1</a>"
+		  "<a href=\"/ep/2\">Episode 2</a>"
+		  "<a href=\"/ep/3\">Episode 3</a>"
+		  "</body></html>" },
+		/* episode pages intentionally absent: fake_fetch returns -1 */
+	};
+	struct fake_site site = { pages, 1, NULL, 0 };
+
+	char *err = NULL;
+	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
+				     SCAN_DEFAULT_DEPTH, &site, &err);
+	CHECK(r != NULL, "(g2) series-no-media page scans");
+	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
+
+	CHECK(r->is_series == 1, "(g2) series detected even without reachable media");
+
+	char *cfg = NULL;
+	CHECK(emit_to_string(r, -1, &cfg) == 0 && cfg,
+	      "(g2) skeleton config emits");
+	if (cfg) {
+		char *perr = NULL;
+		extractor_t *ex = extractor_parse(cfg, "(gen-nomedia)", &perr);
+		CHECK(ex != NULL, "(g2) skeleton config parses (FIX 3)");
+		if (!ex)
+			printf("  parse err: %s\n", perr ? perr : "(none)");
+		free(perr);
+		if (ex)
+			extractor_free(ex);
 		free(cfg);
 	}
 	scan_result_free(r);
@@ -343,6 +623,10 @@ main(void)
 	test_hls_in_json();
 	test_ad_vs_content();
 	test_skeleton_when_no_media();
+	test_one_hop();
+	test_two_hops();
+	test_series();
+	test_series_no_media();
 	test_ad_host_blocklist();
 
 	if (failures == 0)

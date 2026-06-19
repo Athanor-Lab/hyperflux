@@ -349,28 +349,77 @@ jobs:
             -o - | grep -qF "output ${want}" \
             || { echo "stdout config missing output" >&2; exit 1; }
 
-          # Default (no -o): SAVE active into the user extractor dir and confirm
-          # a later --extract-list shows it (item 2: active by default).
+          # Default (no -o): PRINT the config to stdout and STASH it pending,
+          # printing a --save-config hint we parse the id out of. A second
+          # --save-config step then installs it active.
           udir="${workdir}/cfg"
           export XDG_CONFIG_HOME="${udir}"
           "${flux}" --extract-scan "http://127.0.0.1:${port}/watch.html" --yes \
-            2> "${workdir}/save.err"
+            > "${workdir}/scan.out" 2> "${workdir}/scan.err"
+          grep -qF "output ${want}" "${workdir}/scan.out" \
+            || { echo "default scan did not print the resolved output" >&2; \
+                 cat "${workdir}/scan.err" >&2; exit 1; }
+          grep -q -- "--save-config" "${workdir}/scan.err" \
+            || { echo "default scan did not hint --save-config" >&2; \
+                 cat "${workdir}/scan.err" >&2; exit 1; }
+          id="$(sed -n 's/.*--save-config \([A-Za-z0-9_-]*\).*/\1/p' \
+                  "${workdir}/scan.err")"
+          test -n "${id}" || { echo "could not parse a pending id" >&2; exit 1; }
+
+          "${flux}" --save-config "${id}" 2> "${workdir}/save.err" \
+            || { echo "--save-config failed" >&2; \
+                 cat "${workdir}/save.err" >&2; exit 1; }
           saved="${udir}/hyperflux/extractors/site.conf"
           test -f "${saved}" \
-            || { echo "default scan did not save into the user dir" >&2; \
+            || { echo "--save-config did not install into the user dir" >&2; \
                  cat "${workdir}/save.err" >&2; exit 1; }
           grep -qF "output ${want}" "${saved}" \
             || { echo "saved config missing resolved output" >&2; exit 1; }
           "${flux}" --extract-list | grep -qF "${saved}" \
             || { echo "saved config is not active (not listed)" >&2; exit 1; }
-          # Re-running must refuse to clobber the hand-tunable auto-path.
-          if "${flux}" --extract-scan "http://127.0.0.1:${port}/watch.html" \
-               --yes 2>/dev/null; then
-            echo "re-scan clobbered an existing config" >&2; exit 1
+          # A second --save-config of the same id must refuse to clobber.
+          if "${flux}" --save-config "${id}" 2>/dev/null; then
+            echo "second --save-config clobbered an existing config" >&2; exit 1
           fi
+
+          # --extract-scan-depth=3 is accepted (recursion bound, max 3).
+          "${flux}" --extract-scan "http://127.0.0.1:${port}/watch.html" \
+            --extract-scan-depth=3 --yes >/dev/null 2>&1 \
+            || { echo "--extract-scan-depth=3 not accepted" >&2; exit 1; }
+
+          # --extract-scan-depth=9 above SCAN_MAX_DEPTH must print a clamp notice.
+          "${flux}" --extract-scan "http://127.0.0.1:${port}/watch.html" \
+            --extract-scan-depth=9 --yes >/dev/null 2>"${workdir}/clamp.err" \
+            || true
+          grep -qi "clamp" "${workdir}/clamp.err" \
+            || { echo "--extract-scan-depth=9 did not print a clamp notice" >&2; \
+                 cat "${workdir}/clamp.err" >&2; exit 1; }
+
+          # --extract-scan-depth=abc (non-numeric) must fail with non-zero exit.
+          if "${flux}" --extract-scan "http://127.0.0.1:${port}/watch.html" \
+               --extract-scan-depth=abc --yes >/dev/null 2>/dev/null; then
+            echo "--extract-scan-depth=abc should have failed" >&2; exit 1
+          fi
+
+          # Path traversal guard: a crafted pending file with name=../../../escape
+          # must not install outside the extractors dir.
+          penddir="${udir}/hyperflux/extractors/.pending"
+          mkdir -p "${penddir}"
+          evil_id="evil-00000"
+          printf 'name ../../../../tmp/flux_escape_%s\nmatch evil\\.example\\.com\noutput {url}\n' \
+            "$$" > "${penddir}/${evil_id}.conf"
+          "${flux}" --save-config "${evil_id}" 2>/dev/null || true
+          if ls /tmp/flux_escape_* 2>/dev/null | grep -q .; then
+            echo "BUG: path traversal escaped extractors dir" >&2; exit 1
+          fi
+          # Any saved file must remain under the extractors dir.
+          if find "${udir}/hyperflux/extractors" -name "flux_escape_*" | grep -q .; then
+            echo "BUG: traversal file landed inside extractors dir with bad name" >&2; exit 1
+          fi
+
           unset XDG_CONFIG_HOME
 
-          echo "Scan e2e OK: --extract-scan emits, saves active, refuses clobber"
+          echo "Scan e2e OK: --extract-scan prints+stashes, --save-config installs, refuses clobber"
 
       - name: Install e2e (bundled extractor config ships active)
         run: |

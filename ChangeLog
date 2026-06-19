@@ -4,6 +4,20 @@ kept unchanged for the record, including their original author names.
 
 
 
+Version: unreleased
+
+  [ Hyperflux contributors ]
+
+* scan: --extract-scan follows internal watch/play/embed links up to
+  --extract-scan-depth hops (default 2, max 3) when the landing page has no direct
+  media, and emits a multi-step get/var config that resolves the media at download
+  time
+* scan: detect series index pages and emit a list + per-episode pipeline config
+* scan: --extract-scan now prints the config and stashes it pending instead of
+  auto-saving; --save-config <id> installs a pending config active (stable id per
+  source URL, refuses to clobber an existing active config)
+
+
 Version: 2.0.0, 2026-06-18
 
   [ Hyperflux contributors ]
