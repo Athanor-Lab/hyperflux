@@ -36,7 +36,10 @@ Point `flux --extract-scan <url>` at a streaming page and it writes a config tha
 resolves the real media URL. When the page has no direct media, it follows the
 internal watch/play/embed links a few hops to reach the player and generates a
 multi-step config; raise or lower how far it looks with `--extract-scan-depth=N`
-(default 2, max 3). Series index pages get a config that lists every episode.
+(default 2, max 3). Series index pages get a config that lists every episode. The
+discovery is content-driven: it follows promising links even without a standard
+`/watch` or `/play` pattern, stays within the series you scan, and ignores ad and
+onclick/popunder traps.
 
 The scan prints the config and stashes a pending copy instead of activating it.
 When you are happy with it, run the `flux --save-config <id>` line it suggests to

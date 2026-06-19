@@ -598,6 +598,385 @@ test_series_no_media(void)
 	scan_result_free(r);
 }
 
+/* ---- (h) media behind a non-hardcoded link (generic harvest) ----------- */
+
+static void
+test_generic_link_follow(void)
+{
+	/* Landing has a custom-slug episode link (no /ep/, /watch/, ?file=).
+	 * The linked page has a direct mp4 via <source>.  The generic harvester
+	 * must follow it and the generated config must be a reusable generalized
+	 * ERE (not a literal "1" in the var line). */
+	static const struct kv pages[] = {
+		{ "https://site.example.com/anime/naruto",
+		  "<html><body>"
+		  "<a href=\"/serie/foo/episodio-1-ita\">Episodio 1</a>"
+		  "</body></html>" },
+		{ "https://site.example.com/serie/foo/episodio-1-ita",
+		  "<html><body><video controls>"
+		  "<source src=\"https://cdn.example.com/v/ep1.mp4\">"
+		  "</video></body></html>" },
+	};
+	struct fake_site site = { pages, 2, NULL, 0 };
+
+	char *err = NULL;
+	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
+				     SCAN_DEFAULT_DEPTH, &site, &err);
+	CHECK(r != NULL, "(h) generic-link page scans");
+	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
+
+	CHECK(r->ncands >= 1, "(h) media found via generic link follow");
+	if (r->ncands >= 1) {
+		CHECK(strcmp(r->cands[0].url,
+			     "https://cdn.example.com/v/ep1.mp4") == 0,
+		      "(h) top candidate is the mp4");
+		CHECK(r->cands[0].nchain >= 2, "(h) chain has at least two steps");
+	}
+
+	char *cfg = NULL;
+	CHECK(emit_to_string(r, -1, &cfg) == 0 && cfg, "(h) config emits");
+	if (cfg) {
+		/* The link var ERE must be generalized (contain a charset or
+		 * quantifier), not the literal episode slug "episodio-1-ita". */
+		const char *var_line = strstr(cfg, "var    link0");
+		CHECK(var_line != NULL, "(h) var link0 line present");
+		if (var_line) {
+			/* A synthesized ERE will contain [0-9]+ or [A-Za-z0-9 */
+			int generalized = (strstr(var_line, "[0-9]") != NULL ||
+					   strstr(var_line, "[A-Za-z") != NULL);
+			CHECK(generalized, "(h) link ERE is generalized (not literal slug)");
+		}
+
+		char *perr = NULL;
+		extractor_t *ex = extractor_parse(cfg, "(gen-h)", &perr);
+		CHECK(ex != NULL, "(h) generated config parses");
+		if (!ex) { printf("  parse err: %s\n", perr ? perr : "(none)"); }
+		free(perr);
+		if (ex) {
+			char *media = NULL, *rerr = NULL;
+			int rc = extractor_run(ex, pages[0].url, fake_fetch,
+					       &site, &media, &rerr);
+			CHECK(rc == 0, "(h) generated config runs");
+			if (rc != 0)
+				printf("  run err: %s\n", rerr ? rerr : "(none)");
+			CHECK(media && strcmp(media,
+				"https://cdn.example.com/v/ep1.mp4") == 0,
+			      "(h) run resolves ep1.mp4");
+			free(media);
+			free(rerr);
+			extractor_free(ex);
+		}
+		free(cfg);
+	}
+	scan_result_free(r);
+}
+
+/* ---- (i) structural series: no /ep/ URLs, generic template detection ---- */
+
+static void
+test_structural_series(void)
+{
+	/* Landing lists /anime/foo/1, /anime/foo/2, /anime/foo/3 — no /ep/.
+	 * Each episode page has a direct mp4.  Structural detection must fire. */
+	static const struct kv pages[] = {
+		{ "https://stream.example.io/show/myshow",
+		  "<html><body>"
+		  "<a href=\"/anime/foo/1\">Episode 1</a>"
+		  "<a href=\"/anime/foo/2\">Episode 2</a>"
+		  "<a href=\"/anime/foo/3\">Episode 3</a>"
+		  "</body></html>" },
+		{ "https://stream.example.io/anime/foo/1",
+		  "<html><body><video>"
+		  "<source src=\"https://cdn.example.io/v/ep1.mp4\">"
+		  "</video></body></html>" },
+		{ "https://stream.example.io/anime/foo/2",
+		  "<html><body><video>"
+		  "<source src=\"https://cdn.example.io/v/ep2.mp4\">"
+		  "</video></body></html>" },
+		{ "https://stream.example.io/anime/foo/3",
+		  "<html><body><video>"
+		  "<source src=\"https://cdn.example.io/v/ep3.mp4\">"
+		  "</video></body></html>" },
+	};
+	struct fake_site site = { pages, 4, NULL, 0 };
+
+	char *err = NULL;
+	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
+				     SCAN_DEFAULT_DEPTH, &site, &err);
+	CHECK(r != NULL, "(i) structural series page scans");
+	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
+
+	CHECK(r->is_series == 1, "(i) structural series detected");
+	CHECK(r->list_ere != NULL, "(i) list ERE set");
+	if (r->list_ere) {
+		/* list_ere must contain [0-9]+ (generalized). */
+		CHECK(strstr(r->list_ere, "[0-9]") != NULL,
+		      "(i) list ERE is generalized");
+	}
+
+	char *cfg = NULL;
+	CHECK(emit_to_string(r, -1, &cfg) == 0 && cfg, "(i) config emits");
+	if (cfg) {
+		char *perr = NULL;
+		extractor_t *ex = extractor_parse(cfg, "(gen-i)", &perr);
+		CHECK(ex != NULL, "(i) generated config parses");
+		if (!ex) { printf("  parse err: %s\n", perr ? perr : "(none)"); }
+		free(perr);
+		if (ex) {
+			/* FIX 2: match must fire on the series landing URL. */
+			CHECK(extractor_matches(ex, pages[0].url) == 1,
+			      "(i) config matches series landing URL");
+
+			CHECK(extractor_has_list(ex), "(i) config has list directive");
+			char **urls = NULL;
+			size_t n = 0;
+			char *lerr = NULL;
+			int rc = extractor_list_episodes(ex, pages[0].url,
+				fake_fetch, &site, &urls, &n, &lerr);
+			CHECK(rc == 0 && n >= 3,
+			      "(i) list_episodes returns >= 3 episodes");
+			if (rc != 0)
+				printf("  list err: %s\n", lerr ? lerr : "(none)");
+			if (n >= 1) {
+				/* URLs must be absolute. */
+				CHECK(strncmp(urls[0], "https://", 8) == 0,
+				      "(i) first episode URL is absolute");
+			}
+			free(lerr);
+
+			/* Per-episode run resolves the mp4. */
+			char *media = NULL, *rerr = NULL;
+			int rr = extractor_run(ex,
+				"https://stream.example.io/anime/foo/1",
+				fake_fetch, &site, &media, &rerr);
+			CHECK(rr == 0 && media && strcmp(media,
+				"https://cdn.example.io/v/ep1.mp4") == 0,
+			      "(i) per-episode run resolves ep1.mp4");
+			if (rr != 0)
+				printf("  run err: %s\n", rerr ? rerr : "(none)");
+			free(media);
+			free(rerr);
+			extractor_free_urls(urls, n);
+			extractor_free(ex);
+		}
+		free(cfg);
+	}
+	scan_result_free(r);
+}
+
+/* ---- (j) multi-series containment: picks the user's series, not the biggest */
+
+static void
+test_multi_series_containment(void)
+{
+	/* Landing is the foo series index. Page also lists a larger bar series
+	 * (5 entries) and a stray baz link.  Scanner must anchor to foo. */
+	static const struct kv pages[] = {
+		{ "https://site.test/anime/foo",
+		  "<html><body>"
+		  /* foo series: 3 episodes */
+		  "<a href=\"/anime/foo/1\">Foo Ep 1</a>"
+		  "<a href=\"/anime/foo/2\">Foo Ep 2</a>"
+		  "<a href=\"/anime/foo/3\">Foo Ep 3</a>"
+		  /* bar series: 5 episodes (would win on count alone) */
+		  "<a href=\"/anime/bar/1\">Bar Ep 1</a>"
+		  "<a href=\"/anime/bar/2\">Bar Ep 2</a>"
+		  "<a href=\"/anime/bar/3\">Bar Ep 3</a>"
+		  "<a href=\"/anime/bar/4\">Bar Ep 4</a>"
+		  "<a href=\"/anime/bar/5\">Bar Ep 5</a>"
+		  /* unrelated link */
+		  "<a href=\"/anime/baz/9\">Baz Ep 9</a>"
+		  "</body></html>" },
+		{ "https://site.test/anime/foo/1",
+		  "<html><body><video>"
+		  "<source src=\"https://cdn.test/v/foo1.mp4\">"
+		  "</video></body></html>" },
+		{ "https://site.test/anime/foo/2",
+		  "<html><body><video>"
+		  "<source src=\"https://cdn.test/v/foo2.mp4\">"
+		  "</video></body></html>" },
+		{ "https://site.test/anime/foo/3",
+		  "<html><body><video>"
+		  "<source src=\"https://cdn.test/v/foo3.mp4\">"
+		  "</video></body></html>" },
+	};
+	struct fake_site site = { pages, 4, NULL, 0 };
+
+	char *err = NULL;
+	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
+				     SCAN_DEFAULT_DEPTH, &site, &err);
+	CHECK(r != NULL, "(j) multi-series page scans");
+	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
+
+	CHECK(r->is_series == 1, "(j) series detected");
+	if (r->list_ere) {
+		/* list_ere must match foo URLs, not bar. */
+		CHECK(strstr(r->list_ere, "/anime/foo/") != NULL ||
+		      strstr(r->list_ere, "foo") != NULL,
+		      "(j) list_ere anchored to foo series");
+		CHECK(strstr(r->list_ere, "/anime/bar/") == NULL,
+		      "(j) list_ere does NOT match bar series");
+	}
+
+	char *cfg = NULL;
+	CHECK(emit_to_string(r, -1, &cfg) == 0 && cfg, "(j) config emits");
+	if (cfg) {
+		char *perr = NULL;
+		extractor_t *ex = extractor_parse(cfg, "(gen-j)", &perr);
+		CHECK(ex != NULL, "(j) generated config parses");
+		if (!ex) { printf("  parse err: %s\n", perr ? perr : "(none)"); }
+		free(perr);
+		if (ex) {
+			CHECK(extractor_matches(ex, pages[0].url) == 1,
+			      "(j) config matches series landing URL");
+
+			CHECK(extractor_has_list(ex), "(j) config has list directive");
+			char **urls = NULL;
+			size_t n = 0;
+			char *lerr = NULL;
+			int rc = extractor_list_episodes(ex, pages[0].url,
+				fake_fetch, &site, &urls, &n, &lerr);
+			CHECK(rc == 0, "(j) list_episodes succeeds");
+			if (rc != 0)
+				printf("  list err: %s\n", lerr ? lerr : "(none)");
+			free(lerr);
+
+			/* All returned URLs must be foo episodes. */
+			CHECK(n == 3, "(j) exactly 3 foo episodes returned");
+			for (size_t i = 0; i < n; i++) {
+				CHECK(strstr(urls[i], "/anime/foo/") != NULL,
+				      "(j) episode URL is a foo URL");
+				CHECK(strstr(urls[i], "/anime/bar/") == NULL,
+				      "(j) no bar URL in episode list");
+				CHECK(strstr(urls[i], "/anime/baz/") == NULL,
+				      "(j) no baz URL in episode list");
+			}
+			extractor_free_urls(urls, n);
+			extractor_free(ex);
+		}
+		free(cfg);
+	}
+	scan_result_free(r);
+}
+
+/* ---- (l) multi-series containment with ABSOLUTE hrefs: anchors path-to-path */
+
+static void
+test_multi_series_absolute(void)
+{
+	/* Same as (j) but every episode href is absolute. Before the path-to-path
+	 * relatedness fix the scanner mis-tiered and could pick the larger bar
+	 * series; it must still anchor to foo (the landing). */
+	static const struct kv pages[] = {
+		{ "https://site.test/anime/foo",
+		  "<html><body>"
+		  "<a href=\"https://site.test/anime/foo/1\">Foo 1</a>"
+		  "<a href=\"https://site.test/anime/foo/2\">Foo 2</a>"
+		  "<a href=\"https://site.test/anime/foo/3\">Foo 3</a>"
+		  "<a href=\"https://site.test/anime/bar/1\">Bar 1</a>"
+		  "<a href=\"https://site.test/anime/bar/2\">Bar 2</a>"
+		  "<a href=\"https://site.test/anime/bar/3\">Bar 3</a>"
+		  "<a href=\"https://site.test/anime/bar/4\">Bar 4</a>"
+		  "<a href=\"https://site.test/anime/bar/5\">Bar 5</a>"
+		  "</body></html>" },
+		{ "https://site.test/anime/foo/1",
+		  "<html><body><video>"
+		  "<source src=\"https://cdn.test/v/foo1.mp4\"></video></body></html>" },
+		{ "https://site.test/anime/foo/2",
+		  "<html><body><video>"
+		  "<source src=\"https://cdn.test/v/foo2.mp4\"></video></body></html>" },
+		{ "https://site.test/anime/foo/3",
+		  "<html><body><video>"
+		  "<source src=\"https://cdn.test/v/foo3.mp4\"></video></body></html>" },
+	};
+	struct fake_site site = { pages, 4, NULL, 0 };
+
+	char *err = NULL;
+	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
+				     SCAN_DEFAULT_DEPTH, &site, &err);
+	CHECK(r != NULL, "(l) absolute-href multi-series scans");
+	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
+
+	CHECK(r->is_series == 1, "(l) series detected");
+	if (r->list_ere) {
+		CHECK(strstr(r->list_ere, "/anime/foo/") != NULL,
+		      "(l) list_ere anchored to foo, not the larger bar series");
+		CHECK(strstr(r->list_ere, "/anime/bar/") == NULL,
+		      "(l) list_ere does NOT match bar");
+	}
+
+	char *cfg = NULL;
+	if (emit_to_string(r, -1, &cfg) == 0 && cfg) {
+		char *perr = NULL;
+		extractor_t *ex = extractor_parse(cfg, "(gen-l)", &perr);
+		CHECK(ex != NULL, "(l) generated config parses");
+		free(perr);
+		if (ex) {
+			char **urls = NULL;
+			size_t n = 0;
+			char *lerr = NULL;
+			int rc = extractor_list_episodes(ex, pages[0].url,
+				fake_fetch, &site, &urls, &n, &lerr);
+			CHECK(rc == 0 && n == 3, "(l) exactly 3 foo episodes returned");
+			free(lerr);
+			for (size_t i = 0; i < n; i++)
+				CHECK(strstr(urls[i], "/anime/bar/") == NULL,
+				      "(l) no bar URL in episode list");
+			extractor_free_urls(urls, n);
+			extractor_free(ex);
+		}
+		free(cfg);
+	}
+	scan_result_free(r);
+}
+
+/* ---- (k) ad / onclick / popunder trap: real media found, traps skipped ---- */
+
+static void
+test_ad_trap(void)
+{
+	/* Landing has multiple traps but also the real same-site player link. */
+	static const struct kv pages[] = {
+		{ "https://site.test/watch/show",
+		  "<html><body>"
+		  /* onclick popunder: href='#' -> followable_ref rejects it */
+		  "<a href=\"#\" onclick=\"window.open('https://popads.net/x')\">PLAY</a>"
+		  /* cross-origin ad anchor: ad-host blocklist catches it */
+		  "<a href=\"https://hilltopads.net/go?url=z\">Watch HD</a>"
+		  /* same-site affiliate redirect: penalty token '/out' catches it */
+		  "<a href=\"/out?url=https://spam\">mirror</a>"
+		  /* the real player link */
+		  "<a href=\"/embed/show-1\">player</a>"
+		  "</body></html>" },
+		{ "https://site.test/embed/show-1",
+		  "<html><body><video>"
+		  "<source src=\"https://cdn.test/v/real.mp4\">"
+		  "</video></body></html>" },
+	};
+	struct fake_site site = { pages, 2, NULL, 0 };
+
+	char *err = NULL;
+	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
+				     SCAN_DEFAULT_DEPTH, &site, &err);
+	CHECK(r != NULL, "(k) ad-trap page scans");
+	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
+
+	CHECK(r->ncands >= 1, "(k) real media found despite traps");
+	for (size_t i = 0; i < r->ncands; i++) {
+		CHECK(strstr(r->cands[i].url, "popads") == NULL,
+		      "(k) no popads candidate");
+		CHECK(strstr(r->cands[i].url, "hilltopads") == NULL,
+		      "(k) no hilltopads candidate");
+		CHECK(strstr(r->cands[i].url, "/out?") == NULL,
+		      "(k) no affiliate /out candidate");
+	}
+	if (r->ncands >= 1) {
+		CHECK(strcmp(r->cands[0].url, "https://cdn.test/v/real.mp4") == 0,
+		      "(k) top candidate is the real mp4");
+	}
+	scan_result_free(r);
+}
+
 /* ---- ad-host blocklist unit ------------------------------------------- */
 
 static void
@@ -627,6 +1006,11 @@ main(void)
 	test_two_hops();
 	test_series();
 	test_series_no_media();
+	test_generic_link_follow();
+	test_structural_series();
+	test_multi_series_containment();
+	test_multi_series_absolute();
+	test_ad_trap();
 	test_ad_host_blocklist();
 
 	if (failures == 0)

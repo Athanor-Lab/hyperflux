@@ -177,6 +177,21 @@ static const char *const scan_ad_hosts[] = {
 	"adsrvr.org",
 	"moatads.com",
 	"scorecardresearch.com",
+	/* popunder / onclick / adult ad networks */
+	"popads.net",
+	"propellerads.com",
+	"popcash.net",
+	"adsterra.com",
+	"hilltopads.net",
+	"hilltopads.com",
+	"exoclick.com",
+	"clickadu.com",
+	"juicyads.com",
+	"adcash.com",
+	"popmyads.com",
+	"mgid.com",
+	"onclickads.net",
+	"trafficjunky.com",
 };
 
 int
@@ -639,19 +654,382 @@ scan_followable_ref(const char *ref)
 	return 1;
 }
 
-/* Collect up to SCAN_MAX_FOLLOW unique, followable "next page" links from
- * `text`. Each output entry holds the resolved absolute URL, the raw ref (for a
- * provenance comment), and the ERE that captured it. Caller frees abs/ref of
- * each filled slot. Returns the number filled, or -1 on OOM. */
+/* Follow-link entry: resolved URL, raw ref, and capture ERE (all owned). */
 struct scan_follow {
 	char *abs;	/* resolved absolute URL (owned) */
 	char *ref;	/* raw captured ref (owned) */
-	const char *ere;	/* the link ERE that matched (borrowed, static) */
+	char *ere;	/* capture ERE for this link (owned; strdup'd from table or synthesized) */
 };
 
+/* Forward declaration — defined after detect_series uses it. */
+static int detect_series_generic(struct scan_ctx *ctx, const char *body,
+				 char **first_ep);
+
+/* Synthesize a reusable capturing ERE from a concrete href `ref`. Literal parts
+ * are ERE-escaped; [0-9]+ replaces numeric runs; [A-Za-z0-9_-]+ replaces id-ish
+ * runs of 6+ alnum chars. Result: href=["'](<generalized>)["']. Exactly one
+ * capture group, POSIX ERE, no {}, no ' #'. Returns malloc'd string or NULL. */
+static char *
+synthesize_link_ere(const char *ref)
+{
+	if (!ref || !*ref)
+		return NULL;
+
+	/* First pass: build the generalized body into a fixed buffer. */
+	char body[512];
+	size_t bo = 0;
+	const char *p = ref;
+	while (*p && bo + 4 < sizeof(body)) {
+		/* Digit run -> [0-9]+ */
+		if (isdigit((unsigned char)*p)) {
+			if (bo + 7 >= sizeof(body))
+				break;
+			memcpy(body + bo, "[0-9]+", 6);
+			bo += 6;
+			while (isdigit((unsigned char)*p))
+				p++;
+			continue;
+		}
+		/* Id-ish run: 6+ consecutive [A-Za-z0-9] chars that are all
+		 * alphanumeric (no punctuation), replace with [A-Za-z0-9_-]+. */
+		if (isalnum((unsigned char)*p)) {
+			const char *q = p;
+			while (isalnum((unsigned char)*q))
+				q++;
+			if ((size_t)(q - p) >= 6) {
+				if (bo + 14 >= sizeof(body))
+					break;
+				memcpy(body + bo, "[A-Za-z0-9_-]+", 14);
+				bo += 14;
+				p = q;
+				continue;
+			}
+			/* Short alnum literal: fall through to char-by-char. */
+		}
+		/* ERE metachar escape. */
+		char c = *p++;
+		if (strchr(".^$*+?()|[]\\", c)) {
+			body[bo++] = '\\';
+			if (bo >= sizeof(body))
+				break;
+		}
+		body[bo++] = c;
+	}
+	if (bo >= sizeof(body))
+		bo = sizeof(body) - 1;
+	body[bo] = '\0';
+
+	/* Wrap: href=["'](<body>)["'] */
+	char out[600];
+	int n = snprintf(out, sizeof(out), "href=[\"'](%s)[\"']", body);
+	if (n <= 0 || (size_t)n >= sizeof(out))
+		return NULL;
+
+	/* Verify POSIX ERE compiles cleanly. */
+	regex_t re;
+	if (regcomp(&re, out, REG_EXTENDED) != 0)
+		return NULL;
+	regfree(&re);
+
+	return scan_strdup(out);
+}
+
+/* Boost/penalty signals for generic link relevance scoring.
+ * Positive words lift; negative words (effectively) skip. */
+static const char *const scan_boost_tokens[] = {
+	"episode", "ep", "watch", "play", "player", "stream", "video", "vid",
+	"guarda", "vedi", "season", "stagione", "puntata", "episodio",
+	"capitolo", "movie", "film", "serie", "anime", "embed",
+	NULL
+};
+static const char *const scan_penalty_tokens[] = {
+	"login", "signin", "signup", "register", "account", "cart",
+	"checkout", "category", "categor", "genre", "gener", "tag",
+	"search", "cerca", "contact", "about", "privacy", "terms", "faq",
+	"donat", "page=", "/page/", "rss", "feed", "sitemap",
+	"facebook", "twitter", "x.com", "instagram", "youtube", "t.me",
+	"whatsapp",
+	/* redirect / affiliate / ad traps */
+	"/out", "/go/", "/redirect", "redir", "aff=", "affiliate",
+	"sponsor", "promo", "banner", "popup", "popunder", "/ads",
+	"adserver", "/click", "utm_", "linkvert", "shorten", "/away",
+	NULL
+};
+
+/* Return a relevance score for a candidate link. `href` is the raw ref;
+ * `ctx_window` is ~80 chars of surrounding HTML (may be NULL). Higher=better;
+ * negative means skip. */
+static int
+score_link(const char *href, const char *ctx_window)
+{
+	if (!href)
+		return -9999;
+
+	/* Scratch buffer: lowercased href + window for token search. */
+	char buf[256];
+	snprintf(buf, sizeof(buf), "%s %s", href, ctx_window ? ctx_window : "");
+	for (char *q = buf; *q; q++)
+		*q = (char)tolower((unsigned char)*q);
+
+	/* Hard penalties first. */
+	for (size_t i = 0; scan_penalty_tokens[i]; i++)
+		if (strstr(buf, scan_penalty_tokens[i]))
+			return -9999;
+
+	int score = 0;
+	for (size_t i = 0; scan_boost_tokens[i]; i++)
+		if (strstr(buf, scan_boost_tokens[i]))
+			score += 10;
+
+	/* Digit run in the href path boosts (episode numbers). */
+	const char *path = strchr(href, '/');
+	if (path) {
+		for (const char *q = path; *q; q++)
+			if (isdigit((unsigned char)*q)) {
+				score += 5;
+				break;
+			}
+		/* Id-ish last segment (6+ alnum) also boosts. */
+		const char *last = strrchr(path, '/');
+		if (last) {
+			last++;
+			size_t alen = 0;
+			for (const char *q = last; isalnum((unsigned char)*q); q++)
+				alen++;
+			if (alen >= 6)
+				score += 3;
+		}
+	}
+	return score;
+}
+
+/* Extract the path portion of an absolute URL (everything from the first '/'
+ * after the authority up to '?' or '#'), or "" if none. Result is a pointer
+ * into `url` — not malloc'd, valid for the lifetime of `url`. */
+static const char *
+url_path_ptr(const char *url)
+{
+	if (!url)
+		return "";
+	const char *sep = strstr(url, "://");
+	if (!sep)
+		return "";
+	const char *auth = sep + 3;
+	const char *path = auth + strcspn(auth, "/?#");
+	return (*path == '/') ? path : "";
+}
+
+/* Path portion of a ref that may be absolute, scheme-relative, or relative.
+ * Returns a pointer into `ref` so a relative template anchors path-to-path. */
+static const char *
+ref_path_ptr(const char *ref)
+{
+	if (!ref)
+		return "";
+	const char *sep = strstr(ref, "://");
+	if (sep) {			/* absolute: skip scheme://authority */
+		const char *auth = sep + 3;
+		const char *path = auth + strcspn(auth, "/?#");
+		return (*path == '/') ? path : "";
+	}
+	if (ref[0] == '/' && ref[1] == '/') {	/* scheme-relative //host/path */
+		const char *auth = ref + 2;
+		const char *path = auth + strcspn(auth, "/?#");
+		return (*path == '/') ? path : "";
+	}
+	return ref;			/* absolute or relative path: as-is */
+}
+
+/* Compute length of the common prefix between two strings (char count). */
+static size_t
+common_prefix_len(const char *a, const char *b)
+{
+	size_t n = 0;
+	while (*a && *a == *b) { a++; b++; n++; }
+	return n;
+}
+
+/* Collect same-site <a href> links not already in `out[0..n-1]`, score them,
+ * and append up to `max - n` of the highest-scoring non-penalized ones.
+ * At `depth > 0` (already inside a followed page), generic candidates must
+ * share a path prefix with ctx->page_url to stay within the same content
+ * subtree. Returns updated count, or -1 on OOM. */
+static int
+collect_generic_links(struct scan_ctx *ctx, const char *text,
+		      struct scan_follow *out, size_t n, size_t max,
+		      int depth)
+{
+	/* Generic anchor harvest ERE: group 1 = href value. */
+	static const char generic_ere[] =
+		"<a[^>]+href=[\"']([^\"'<> ]+)[\"']";
+
+	char *page_host = url_host(ctx->page_url);
+
+	/* Scored candidate pool (bounded). */
+#define GLINK_MAX 64
+	struct { char *abs; char *ref; int score; } pool[GLINK_MAX];
+	size_t npool = 0;
+
+	regex_t re;
+	if (regcomp(&re, generic_ere, REG_EXTENDED | REG_ICASE) != 0) {
+		free(page_host);
+		return (int)n;
+	}
+
+	const char *p = text;
+	regmatch_t m[2];
+	while (npool < GLINK_MAX && regexec(&re, p, 2, m, 0) == 0) {
+		if (m[1].rm_so < 0)
+			break;
+
+		/* Extract surrounding window (~80 chars before the match start). */
+		ptrdiff_t wstart = m[0].rm_so > 80 ? m[0].rm_so - 80 : 0;
+		size_t wlen = (size_t)(m[0].rm_eo - wstart);
+		if (wlen > 160)
+			wlen = 160;
+		char window[161];
+		memcpy(window, p + wstart, wlen);
+		window[wlen] = '\0';
+
+		size_t rlen = (size_t)(m[1].rm_eo - m[1].rm_so);
+		char *ref = scan_strndup(p + m[1].rm_so, rlen);
+		if (!ref) {
+			regfree(&re);
+			free(page_host);
+			for (size_t i = 0; i < npool; i++) {
+				free(pool[i].abs);
+				free(pool[i].ref);
+			}
+			return -1;
+		}
+
+		regoff_t adv = m[0].rm_eo > m[0].rm_so ? m[0].rm_eo
+							 : m[0].rm_so + 1;
+		p += adv;
+
+		if (!scan_followable_ref(ref)) {
+			free(ref);
+			continue;
+		}
+
+		int sc = score_link(ref, window);
+		if (sc < 0) {
+			free(ref);
+			continue;
+		}
+
+		char *abs = extractor_resolve_url(ctx->page_url, ref);
+		if (!abs) {
+			free(ref);
+			continue;	/* resolution failure: tolerate */
+		}
+
+		/* Same-site only. */
+		char *h = url_host(abs);
+		int same = (h && page_host && strcmp(h, page_host) == 0);
+		int is_ad = (h && scan_is_ad_host(h));
+		free(h);
+		if (!same || is_ad) {
+			free(abs);
+			free(ref);
+			continue;
+		}
+
+		/* At depth>0, generic links must share a path prefix with the
+		 * current page to stay within the same content subtree. */
+		if (depth > 0) {
+			const char *my_path = url_path_ptr(ctx->page_url);
+			const char *cand_path = url_path_ptr(abs);
+			/* Require at least one shared path segment (the leading
+			 * slash counts; we need the prefix up to the next '/'). */
+			const char *my_seg_end = strchr(my_path + 1, '/');
+			size_t my_seg_len = my_seg_end
+				? (size_t)(my_seg_end - my_path)
+				: strlen(my_path);
+			size_t cp_len = common_prefix_len(my_path, cand_path);
+			if (cp_len < my_seg_len) {
+				free(abs);
+				free(ref);
+				continue;
+			}
+		}
+
+		/* Skip if already in out[] or already queued in pool. */
+		int dup = 0;
+		for (size_t i = 0; i < n && !dup; i++)
+			if (strcmp(out[i].abs, abs) == 0)
+				dup = 1;
+		for (size_t i = 0; i < npool && !dup; i++)
+			if (strcmp(pool[i].abs, abs) == 0)
+				dup = 1;
+		/* Also skip the current page itself. */
+		if (!dup && strcmp(abs, ctx->page_url) == 0)
+			dup = 1;
+		if (dup) {
+			free(abs);
+			free(ref);
+			continue;
+		}
+
+		pool[npool].abs   = abs;
+		pool[npool].ref   = ref;
+		pool[npool].score = sc;
+		npool++;
+	}
+	regfree(&re);
+	free(page_host);
+
+	/* Sort pool descending by score (insertion sort; small pool). */
+	for (size_t i = 1; i < npool; i++) {
+		typeof(pool[0]) key = pool[i];
+		size_t j = i;
+		while (j > 0 && pool[j - 1].score < key.score) {
+			pool[j] = pool[j - 1];
+			j--;
+		}
+		pool[j] = key;
+	}
+
+	/* Emit top candidates up to remaining capacity; synthesize EREs. */
+	for (size_t i = 0; i < npool && n < max; i++) {
+		char *synth = synthesize_link_ere(pool[i].ref);
+		if (!synth) {
+			/* fallback: generic href ERE */
+			synth = scan_strdup(generic_ere);
+		}
+		if (!synth) {
+			/* OOM: free pool tail and bail. */
+			for (size_t k = i; k < npool; k++) {
+				free(pool[k].abs);
+				free(pool[k].ref);
+			}
+			/* Entries 0..i-1 already consumed (abs/ref transferred). */
+			return -1;
+		}
+		out[n].abs = pool[i].abs;
+		out[n].ref = pool[i].ref;
+		out[n].ere = synth;
+		n++;
+		pool[i].abs = NULL;
+		pool[i].ref = NULL;
+	}
+	/* Free any pool entries that didn't fit. */
+	for (size_t i = 0; i < npool; i++) {
+		free(pool[i].abs);
+		free(pool[i].ref);
+	}
+	return (int)n;
+#undef GLINK_MAX
+}
+
+/* Collect up to SCAN_MAX_FOLLOW unique, followable "next page" links from
+ * `text`. Each output entry holds the resolved absolute URL, the raw ref (for a
+ * provenance comment), and the ERE that captured it. `depth` is the hop count
+ * at which these links will be followed (0 = landing page). Caller frees
+ * abs/ref/ere of each filled slot. Returns the number filled, or -1 on OOM. */
 static int
 collect_follow_links(struct scan_ctx *ctx, const char *text,
-		     struct scan_follow *out, size_t max)
+		     struct scan_follow *out, size_t max, int depth)
 {
 	size_t n = 0;
 	for (size_t pi = 0;
@@ -694,9 +1072,16 @@ collect_follow_links(struct scan_ctx *ctx, const char *text,
 					free(abs);
 					free(ref);
 				} else {
+					char *ere_owned = scan_strdup(ere);
+					if (!ere_owned) {
+						free(abs);
+						free(ref);
+						regfree(&re);
+						return -1;
+					}
 					out[n].abs = abs;
 					out[n].ref = ref;
-					out[n].ere = ere;
+					out[n].ere = ere_owned;
 					n++;
 				}
 			} else {
@@ -710,6 +1095,14 @@ collect_follow_links(struct scan_ctx *ctx, const char *text,
 		}
 		regfree(&re);
 	}
+	/* Fill remaining slots with generic relevance-ranked same-site links. */
+	if ((size_t)n < max) {
+		int gn = collect_generic_links(ctx, text, out, (size_t)n, max,
+					       depth);
+		if (gn < 0)
+			return -1;
+		n = gn;
+	}
 	return (int)n;
 }
 
@@ -719,6 +1112,7 @@ free_follow_links(struct scan_follow *links, size_t n)
 	for (size_t i = 0; i < n; i++) {
 		free(links[i].abs);
 		free(links[i].ref);
+		free(links[i].ere);
 	}
 }
 
@@ -826,7 +1220,7 @@ discover_chain(struct scan_ctx *ctx, const char *body, scan_step_t *steps,
 
 	struct scan_follow links[SCAN_MAX_FOLLOW];
 	memset(links, 0, sizeof(links));
-	int nl = collect_follow_links(ctx, body, links, SCAN_MAX_FOLLOW);
+	int nl = collect_follow_links(ctx, body, links, SCAN_MAX_FOLLOW, depth);
 	if (nl < 0)
 		return -1;
 
@@ -846,7 +1240,7 @@ discover_chain(struct scan_ctx *ctx, const char *body, scan_step_t *steps,
 			continue;
 		}
 		/* Push this link's capture step and recurse against the child. */
-		steps[nsteps].ere = (char *)links[i].ere;
+		steps[nsteps].ere = links[i].ere;
 		steps[nsteps].sample = links[i].ref;
 		const char *saved = ctx->page_url;
 		ctx->page_url = links[i].abs;
@@ -932,7 +1326,298 @@ detect_series(struct scan_ctx *ctx, const char *body, char **first_ep)
 			free(seen[i]);
 		free(first);
 	}
+	/* Fallback: structural template-based detection for non-standard URLs. */
+	return detect_series_generic(ctx, body, first_ep);
+}
+
+/* Structural (template-based) series detection. Collect same-site anchor hrefs,
+ * normalize by replacing [0-9]+ with '#', group by template. If any template
+ * has >= SCAN_SERIES_MIN distinct hrefs, declare a series and build list_ere. */
+static int
+detect_series_generic(struct scan_ctx *ctx, const char *body, char **first_ep)
+{
+	*first_ep = NULL;
+	scan_result_t *r = ctx->result;
+
+	static const char anc_ere[] =
+		"<a[^>]+href=[\"']([^\"'<> ]+)[\"']";
+	regex_t re;
+	if (regcomp(&re, anc_ere, REG_EXTENDED | REG_ICASE) != 0)
+		return 0;
+
+	char *page_host = url_host(ctx->page_url);
+
+#define GS_MAX 128
+	/* Collected hrefs. */
+	char *hrefs[GS_MAX];
+	size_t nhrefs = 0;
+
+	const char *p = body;
+	regmatch_t m[2];
+	while (nhrefs < GS_MAX && regexec(&re, p, 2, m, 0) == 0) {
+		if (m[1].rm_so < 0)
+			break;
+		size_t len = (size_t)(m[1].rm_eo - m[1].rm_so);
+		char *ref = scan_strndup(p + m[1].rm_so, len);
+		if (!ref) {
+			regfree(&re);
+			free(page_host);
+			for (size_t i = 0; i < nhrefs; i++)
+				free(hrefs[i]);
+			return -1;
+		}
+		regoff_t adv = m[0].rm_eo > m[0].rm_so ? m[0].rm_eo
+							 : m[0].rm_so + 1;
+		p += adv;
+
+		if (!scan_followable_ref(ref)) {
+			free(ref);
+			continue;
+		}
+		/* Same-site only. */
+		char *abs = extractor_resolve_url(ctx->page_url, ref);
+		if (!abs) {
+			free(ref);
+			continue;
+		}
+		char *h = url_host(abs);
+		int same = (h && page_host && strcmp(h, page_host) == 0);
+		free(h);
+		free(abs);
+		if (!same) {
+			free(ref);
+			continue;
+		}
+		/* Dedup. */
+		int dup = 0;
+		for (size_t i = 0; i < nhrefs && !dup; i++)
+			if (strcmp(hrefs[i], ref) == 0)
+				dup = 1;
+		if (dup) {
+			free(ref);
+			continue;
+		}
+		hrefs[nhrefs++] = ref;
+	}
+	regfree(&re);
+	free(page_host);
+
+	if (nhrefs < SCAN_SERIES_MIN) {
+		for (size_t i = 0; i < nhrefs; i++)
+			free(hrefs[i]);
+		return 0;
+	}
+
+	/* Build templates: replace maximal [0-9]+ runs with '#'. */
+	char *templates[GS_MAX];
+	for (size_t i = 0; i < nhrefs; i++) {
+		char tmp[512];
+		size_t to = 0;
+		for (const char *q = hrefs[i]; *q && to + 2 < sizeof(tmp); ) {
+			if (isdigit((unsigned char)*q)) {
+				tmp[to++] = '#';
+				while (isdigit((unsigned char)*q))
+					q++;
+			} else {
+				tmp[to++] = *q++;
+			}
+		}
+		tmp[to] = '\0';
+		templates[i] = scan_strdup(tmp);
+		if (!templates[i]) {
+			for (size_t k = 0; k < i; k++)
+				free(templates[k]);
+			for (size_t k = 0; k < nhrefs; k++)
+				free(hrefs[k]);
+			return -1;
+		}
+	}
+
+	/* Select the best template, preferring the one most related to the
+	 * landing URL (so a page listing multiple series picks the right one).
+	 * Relatedness: (1) generalized ERE matches ctx->page_url (user passed
+	 * an episode); (2) longest literal path-prefix with landing path;
+	 * (3) member count as tiebreaker. Fall back to count-only if nothing
+	 * is related. See #scan-series-anchor. */
+	const char *landing_path = url_path_ptr(ctx->page_url);
+
+	char *best_tmpl = NULL;
+	size_t best_cnt = 0;
+	int    best_rel  = -1;	/* relatedness tier: 2 > 1 > 0 > -1 */
+	size_t best_pfx  = 0;	/* common prefix length with landing */
+
+	for (size_t i = 0; i < nhrefs; i++) {
+		/* Only consider templates with a unique pointer (avoid re-scoring
+		 * duplicates — we use the first occurrence of each string). */
+		int seen = 0;
+		for (size_t k = 0; k < i && !seen; k++)
+			if (templates[k] == templates[i] ||
+			    strcmp(templates[k], templates[i]) == 0)
+				seen = 1;
+		if (seen)
+			continue;
+
+		size_t cnt = 0;
+		for (size_t j = 0; j < nhrefs; j++)
+			if (strcmp(templates[i], templates[j]) == 0)
+				cnt++;
+		if (cnt < SCAN_SERIES_MIN)
+			continue;
+
+		/* Build the candidate's generalized ERE body to test against
+		 * the landing URL (tier 2). */
+		char e_body[512];
+		size_t eb = 0;
+		for (const char *q = templates[i]; *q && eb + 10 < sizeof(e_body); ) {
+			if (*q == '#') {
+				memcpy(e_body + eb, "[0-9]+", 6);
+				eb += 6;
+				q++;
+			} else {
+				char c = *q++;
+				if (strchr(".^$*+?()|[]\\", c))
+					e_body[eb++] = '\\';
+				e_body[eb++] = c;
+			}
+		}
+		e_body[eb] = '\0';
+		char cand_ere[600];
+		snprintf(cand_ere, sizeof(cand_ere), "href=[\"'](%s)[\"']", e_body);
+
+		int rel = 0;	/* default: no direct relation */
+		size_t pfx = 0;
+
+		regex_t cre;
+		if (regcomp(&cre, cand_ere, REG_EXTENDED) == 0) {
+			/* Strongest signal: the landing matches (user on an episode).
+			 * Test the absolute URL and its path so a relative-href template
+			 * still matches a path-only landing. */
+			char hb[1024];
+			regmatch_t cm[2];
+			snprintf(hb, sizeof(hb), "href=\"%s\"", ctx->page_url);
+			if (regexec(&cre, hb, 2, cm, 0) == 0)
+				rel = 2;
+			if (rel < 2 && *landing_path) {
+				snprintf(hb, sizeof(hb), "href=\"%s\"", landing_path);
+				if (regexec(&cre, hb, 2, cm, 0) == 0)
+					rel = 2;
+			}
+			regfree(&cre);
+		}
+		if (rel < 2) {
+			/* Tier 1: longest common path prefix, path-to-path so an
+			 * absolute-href template anchors to the right series. */
+			pfx = common_prefix_len(ref_path_ptr(templates[i]), landing_path);
+			if (pfx > 1)	/* more than just '/' */
+				rel = 1;
+		}
+
+		/* Pick if better related, or same relation with more members
+		 * or longer prefix. */
+		int better = (rel > best_rel) ||
+			     (rel == best_rel && pfx > best_pfx) ||
+			     (rel == best_rel && pfx == best_pfx && cnt > best_cnt);
+		if (!best_tmpl || better) {
+			best_tmpl = templates[i];
+			best_cnt  = cnt;
+			best_rel  = rel;
+			best_pfx  = pfx;
+		}
+	}
+
+	if (!best_tmpl || best_cnt < SCAN_SERIES_MIN) {
+		for (size_t i = 0; i < nhrefs; i++) {
+			free(templates[i]);
+			free(hrefs[i]);
+		}
+		return 0;
+	}
+
+	/* Build the generalized list_ere from the template. Replace '#' with
+	 * [0-9]+; escape ERE metas in literal chars; wrap as href=["'](...)["']. */
+	char ere_body[512];
+	size_t eo = 0;
+	for (const char *q = best_tmpl; *q && eo + 10 < sizeof(ere_body); ) {
+		if (*q == '#') {
+			memcpy(ere_body + eo, "[0-9]+", 6);
+			eo += 6;
+			q++;
+		} else {
+			char c = *q++;
+			if (strchr(".^$*+?()|[]\\", c))
+				ere_body[eo++] = '\\';
+			ere_body[eo++] = c;
+		}
+	}
+	ere_body[eo] = '\0';
+
+	char list_ere_buf[600];
+	int sn = snprintf(list_ere_buf, sizeof(list_ere_buf),
+			  "href=[\"'](%s)[\"']", ere_body);
+	if (sn <= 0 || (size_t)sn >= sizeof(list_ere_buf)) {
+		for (size_t i = 0; i < nhrefs; i++) {
+			free(templates[i]);
+			free(hrefs[i]);
+		}
+		return 0;
+	}
+
+	/* Verify the generated ERE compiles. */
+	regex_t lre;
+	if (regcomp(&lre, list_ere_buf, REG_EXTENDED) != 0) {
+		for (size_t i = 0; i < nhrefs; i++) {
+			free(templates[i]);
+			free(hrefs[i]);
+		}
+		return 0;
+	}
+	regfree(&lre);
+
+	/* Find the first (lowest-numbered or first-listed) href in this group. */
+	/* Capture first href and template BEFORE freeing the arrays. */
+	char *first = NULL;
+	char *tmpl_copy = scan_strdup(best_tmpl);	/* best_tmpl points into templates[] */
+	if (!tmpl_copy) {
+		for (size_t k = 0; k < nhrefs; k++) {
+			free(templates[k]);
+			free(hrefs[k]);
+		}
+		return -1;
+	}
+	for (size_t i = 0; i < nhrefs; i++) {
+		if (strcmp(templates[i], tmpl_copy) == 0 && !first) {
+			first = scan_strdup(hrefs[i]);
+			if (!first) {
+				free(tmpl_copy);
+				for (size_t k = 0; k < nhrefs; k++) {
+					free(templates[k]);
+					free(hrefs[k]);
+				}
+				return -1;
+			}
+		}
+	}
+
+	for (size_t i = 0; i < nhrefs; i++) {
+		free(templates[i]);
+		free(hrefs[i]);
+	}
+
+	if (!first) {
+		free(tmpl_copy);
+		return 0;
+	}
+
+	r->is_series = 1;
+	r->series_path = tmpl_copy;	/* already strdup'd above */
+	r->list_ere = scan_strdup(list_ere_buf);
+	if (!r->list_ere) {
+		free(first);
+		return -1;	/* series_path freed by scan_result_free */
+	}
+	*first_ep = first;
 	return 0;
+#undef GS_MAX
 }
 
 /* Drive the recursive discovery once the landing page yielded no direct media.
