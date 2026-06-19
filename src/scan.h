@@ -103,6 +103,8 @@ typedef struct {
 	int depth;		/* hops from landing page (0 = direct hit) */
 	scan_step_t chain[SCAN_MAX_CHAIN];
 	size_t nchain;		/* capture steps; last captures media, earlier capture links. 0 = direct. */
+	char *param_token;	/* e.g. "file" when page0 has file=NAME.mp4 and media is at base/NAME.mp4 */
+	char *media_base;	/* e.g. "https://cdn/videos/" — prefix before the param value in the media URL */
 } scan_candidate_t;
 
 /* A scan result: the page URL and the ranked candidate list (best first). */

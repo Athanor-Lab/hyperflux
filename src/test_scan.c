@@ -977,6 +977,264 @@ test_ad_trap(void)
 	scan_result_free(r);
 }
 
+/* ---- (m) kissanime-shaped: anchored list_ere + multi-suffix name ---------- */
+
+static void
+test_kissanime_shape(void)
+{
+	/* Series page for foo-bar-season-2 listing 10 own episodes AND 9 sidebar
+	 * "latest" links from other series — mirrors the kissanime.com.cv shape.
+	 * Each own episode page has a direct <source> mp4. */
+	static const struct kv pages[] = {
+		/* Series index */
+		{ "https://kissanime.com.cv/anime/foo-bar-season-2/",
+		  "<html><body>"
+		  /* 10 own episodes (episode-10 is two digits) */
+		  "<a href=\"https://kissanime.com.cv/foo-bar-season-2-episode-1/\">Ep 1</a>"
+		  "<a href=\"https://kissanime.com.cv/foo-bar-season-2-episode-2/\">Ep 2</a>"
+		  "<a href=\"https://kissanime.com.cv/foo-bar-season-2-episode-3/\">Ep 3</a>"
+		  "<a href=\"https://kissanime.com.cv/foo-bar-season-2-episode-4/\">Ep 4</a>"
+		  "<a href=\"https://kissanime.com.cv/foo-bar-season-2-episode-5/\">Ep 5</a>"
+		  "<a href=\"https://kissanime.com.cv/foo-bar-season-2-episode-6/\">Ep 6</a>"
+		  "<a href=\"https://kissanime.com.cv/foo-bar-season-2-episode-7/\">Ep 7</a>"
+		  "<a href=\"https://kissanime.com.cv/foo-bar-season-2-episode-8/\">Ep 8</a>"
+		  "<a href=\"https://kissanime.com.cv/foo-bar-season-2-episode-9/\">Ep 9</a>"
+		  "<a href=\"https://kissanime.com.cv/foo-bar-season-2-episode-10/\">Ep 10</a>"
+		  /* 9 sidebar "latest" from other series */
+		  "<a href=\"https://kissanime.com.cv/rent-a-thing-season-5-episode-10/\">latest</a>"
+		  "<a href=\"https://kissanime.com.cv/beyond-x-episode-9/\">latest</a>"
+		  "<a href=\"https://kissanime.com.cv/zzz-show-episode-10/\">latest</a>"
+		  "<a href=\"https://kissanime.com.cv/alpha-show-episode-3/\">latest</a>"
+		  "<a href=\"https://kissanime.com.cv/beta-show-episode-5/\">latest</a>"
+		  "<a href=\"https://kissanime.com.cv/gamma-show-episode-7/\">latest</a>"
+		  "<a href=\"https://kissanime.com.cv/delta-show-episode-2/\">latest</a>"
+		  "<a href=\"https://kissanime.com.cv/epsilon-show-episode-4/\">latest</a>"
+		  "<a href=\"https://kissanime.com.cv/omega-show-episode-6/\">latest</a>"
+		  "</body></html>" },
+		/* Episode pages — only ep1 needed for chain discovery */
+		{ "https://kissanime.com.cv/foo-bar-season-2-episode-1/",
+		  "<html><body><video>"
+		  "<source src=\"https://cdn.1a.test/v/foo-bar-2nd-season-episode-1.mp4\">"
+		  "</video></body></html>" },
+		{ "https://kissanime.com.cv/foo-bar-season-2-episode-2/",
+		  "<html><body><video>"
+		  "<source src=\"https://cdn.1a.test/v/foo-bar-2nd-season-episode-2.mp4\">"
+		  "</video></body></html>" },
+		{ "https://kissanime.com.cv/foo-bar-season-2-episode-10/",
+		  "<html><body><video>"
+		  "<source src=\"https://cdn.1a.test/v/foo-bar-2nd-season-episode-10.mp4\">"
+		  "</video></body></html>" },
+	};
+	struct fake_site site = { pages, 4, NULL, 0 };
+
+	char *err = NULL;
+	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
+				     SCAN_DEFAULT_DEPTH, &site, &err);
+	CHECK(r != NULL, "(m) kissanime page scans");
+	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
+
+	CHECK(r->is_series == 1, "(m) series detected");
+
+	/* list_ere must be anchored to the foo-bar-season family.  The digit
+	 * '2' in 'season-2' is generalized to [0-9]+ (correct), so check for
+	 * the literal prefix 'foo-bar-season-' plus a digit placeholder. */
+	if (r->list_ere) {
+		CHECK(strstr(r->list_ere, "foo-bar-season-") != NULL,
+		      "(m) list_ere contains foo-bar-season- prefix");
+		CHECK(strstr(r->list_ere, "episode-") != NULL,
+		      "(m) list_ere contains episode- token");
+		CHECK(strstr(r->list_ere, "rent-a-thing") == NULL,
+		      "(m) list_ere does NOT match rent-a-thing");
+		CHECK(strstr(r->list_ere, "beyond-x") == NULL,
+		      "(m) list_ere does NOT match beyond-x");
+		CHECK(strstr(r->list_ere, "zzz-show") == NULL,
+		      "(m) list_ere does NOT match zzz-show");
+	}
+
+	char *cfg = NULL;
+	CHECK(emit_to_string(r, -1, &cfg) == 0 && cfg, "(m) config emits");
+	if (cfg) {
+		/* FIX A: name must be 'kissanime', not 'com'. */
+		CHECK(strstr(cfg, "name   kissanime") != NULL,
+		      "(m) name is kissanime (not com)");
+
+		char *perr = NULL;
+		extractor_t *ex = extractor_parse(cfg, "(gen-m)", &perr);
+		CHECK(ex != NULL, "(m) generated config parses");
+		if (!ex) { printf("  parse err: %s\n", perr ? perr : "(none)"); }
+		free(perr);
+		if (ex) {
+			CHECK(extractor_matches(ex, pages[0].url) == 1,
+			      "(m) config matches series landing URL");
+
+			CHECK(extractor_has_list(ex), "(m) config has list directive");
+			char **urls = NULL;
+			size_t n = 0;
+			char *lerr = NULL;
+			int rc = extractor_list_episodes(ex, pages[0].url,
+				fake_fetch, &site, &urls, &n, &lerr);
+			CHECK(rc == 0, "(m) list_episodes succeeds");
+			if (rc != 0)
+				printf("  list err: %s\n", lerr ? lerr : "(none)");
+			free(lerr);
+
+			/* Must return exactly 10 foo-bar episodes. */
+			CHECK(n == 10, "(m) exactly 10 episodes listed");
+			int has_ep10 = 0;
+			for (size_t i = 0; i < n; i++) {
+				CHECK(strstr(urls[i], "foo-bar-season-2-episode-") != NULL,
+				      "(m) episode URL is a foo-bar-season-2 URL");
+				CHECK(strstr(urls[i], "rent-a-thing") == NULL,
+				      "(m) no rent-a-thing in list");
+				CHECK(strstr(urls[i], "beyond-x") == NULL,
+				      "(m) no beyond-x in list");
+				if (strstr(urls[i], "episode-10"))
+					has_ep10 = 1;
+			}
+			CHECK(has_ep10, "(m) episode-10 (two digits) included");
+
+			/* Per-episode run resolves the mp4 for episode 1. */
+			char *media = NULL, *rerr = NULL;
+			int rr = extractor_run(ex,
+				"https://kissanime.com.cv/foo-bar-season-2-episode-1/",
+				fake_fetch, &site, &media, &rerr);
+			CHECK(rr == 0 && media &&
+			      strcmp(media, "https://cdn.1a.test/v/foo-bar-2nd-season-episode-1.mp4") == 0,
+			      "(m) extractor_run resolves episode-1 mp4");
+			if (rr != 0)
+				printf("  run err: %s\n", rerr ? rerr : "(none)");
+			free(media);
+			free(rerr);
+			extractor_free_urls(urls, n);
+			extractor_free(ex);
+		}
+		free(cfg);
+	}
+	scan_result_free(r);
+}
+
+/* ---- (n) filename-as-param 1-hop template (kissanime-iframe shape) ------- */
+
+static void
+test_filename_as_param(void)
+{
+	/* Series landing lists 3 episode URLs. Each episode page carries an iframe
+	 * whose src has file=<basename> as a query param; the cdn iframe page
+	 * exposes the real mp4 via <source src>. The basename appears on the
+	 * episode page (page0 for chain discovery), so the scanner must emit the
+	 * 1-hop param template instead of a multi-step get chain. */
+	static const struct kv pages[] = {
+		{ "https://site.test/anime/foo-s2/",
+		  "<html><body>"
+		  "<a href=\"https://site.test/anime/foo-s2/episode-1/\">ep1</a>"
+		  "<a href=\"https://site.test/anime/foo-s2/episode-2/\">ep2</a>"
+		  "<a href=\"https://site.test/anime/foo-s2/episode-3/\">ep3</a>"
+		  "</body></html>" },
+		/* episode pages: each has an iframe with file=<basename> */
+		{ "https://site.test/anime/foo-s2/episode-1/",
+		  "<html><body>"
+		  "<iframe src=\"https://cdn.v.test/index.php?action=play&file=foo-2nd-episode-1.mp4\">"
+		  "</iframe></body></html>" },
+		{ "https://site.test/anime/foo-s2/episode-2/",
+		  "<html><body>"
+		  "<iframe src=\"https://cdn.v.test/index.php?action=play&file=foo-2nd-episode-2.mp4\">"
+		  "</iframe></body></html>" },
+		{ "https://site.test/anime/foo-s2/episode-3/",
+		  "<html><body>"
+		  "<iframe src=\"https://cdn.v.test/index.php?action=play&file=foo-2nd-episode-3.mp4\">"
+		  "</iframe></body></html>" },
+		/* cdn iframe pages: each exposes the real mp4 via <source src> */
+		{ "https://cdn.v.test/index.php?action=play&file=foo-2nd-episode-1.mp4",
+		  "<html><body><video>"
+		  "<source src=\"https://cdn.v.test/videos/foo-2nd-episode-1.mp4\">"
+		  "</video></body></html>" },
+		{ "https://cdn.v.test/index.php?action=play&file=foo-2nd-episode-2.mp4",
+		  "<html><body><video>"
+		  "<source src=\"https://cdn.v.test/videos/foo-2nd-episode-2.mp4\">"
+		  "</video></body></html>" },
+		{ "https://cdn.v.test/index.php?action=play&file=foo-2nd-episode-3.mp4",
+		  "<html><body><video>"
+		  "<source src=\"https://cdn.v.test/videos/foo-2nd-episode-3.mp4\">"
+		  "</video></body></html>" },
+	};
+	struct fake_site site = { pages, sizeof(pages) / sizeof(pages[0]), NULL, 0 };
+
+	char *err = NULL;
+	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
+				     SCAN_DEFAULT_DEPTH, &site, &err);
+	CHECK(r != NULL, "(n) filename-as-param page scans");
+	if (!r) {
+		printf("  err: %s\n", err ? err : "(none)");
+		free(err);
+		return;
+	}
+
+	CHECK(r->is_series, "(n) detected as series");
+	CHECK(r->ncands >= 1, "(n) candidate found");
+
+	char *cfg = NULL;
+	CHECK(emit_to_string(r, -1, &cfg) == 0 && cfg, "(n) config emits");
+	if (cfg) {
+		/* Must use the 1-hop param template, not a multi-get chain. */
+		CHECK(strstr(cfg, "var    file <- page0 regex") != NULL,
+		      "(n) config has 1-hop var line");
+		CHECK(strstr(cfg, "file=([^\"'&<> ]+") != NULL,
+		      "(n) capture regex uses file= param");
+		CHECK(strstr(cfg, "output https://cdn.v.test/videos/{file}") != NULL,
+		      "(n) output uses media_base + {file}");
+		/* Must NOT contain a multi-hop get page1 or get page2. */
+		CHECK(strstr(cfg, "get    page1") == NULL,
+		      "(n) no page1 hop (1-hop template only)");
+		CHECK(strstr(cfg, "get    page2") == NULL,
+		      "(n) no page2 hop");
+
+		/* Roundtrip: config must parse and run. */
+		char *perr = NULL;
+		extractor_t *ex = extractor_parse(cfg, "(gen-n)", &perr);
+		CHECK(ex != NULL, "(n) generated config parses");
+		if (!ex) {
+			printf("  parse err: %s\n", perr ? perr : "(none)");
+		}
+		free(perr);
+
+		if (ex) {
+			/* Anti-collapse: episode-1 and episode-3 must resolve to
+			 * DISTINCT per-episode mp4 paths (not the same latest one). */
+			char *media1 = NULL, *rerr1 = NULL;
+			int rc1 = extractor_run(ex,
+						"https://site.test/anime/foo-s2/episode-1/",
+						fake_fetch, &site, &media1, &rerr1);
+			CHECK(rc1 == 0, "(n) run resolves episode-1");
+			if (rc1 != 0)
+				printf("  run ep1 err: %s\n", rerr1 ? rerr1 : "(none)");
+			CHECK(media1 != NULL &&
+			      strcmp(media1,
+				     "https://cdn.v.test/videos/foo-2nd-episode-1.mp4") == 0,
+			      "(n) episode-1 resolves to correct mp4");
+			free(media1);
+			free(rerr1);
+
+			char *media3 = NULL, *rerr3 = NULL;
+			int rc3 = extractor_run(ex,
+						"https://site.test/anime/foo-s2/episode-3/",
+						fake_fetch, &site, &media3, &rerr3);
+			CHECK(rc3 == 0, "(n) run resolves episode-3");
+			if (rc3 != 0)
+				printf("  run ep3 err: %s\n", rerr3 ? rerr3 : "(none)");
+			CHECK(media3 != NULL &&
+			      strcmp(media3,
+				     "https://cdn.v.test/videos/foo-2nd-episode-3.mp4") == 0,
+			      "(n) episode-3 resolves to correct mp4 (anti-collapse)");
+			free(media3);
+			free(rerr3);
+
+			extractor_free(ex);
+		}
+		free(cfg);
+	}
+	scan_result_free(r);
+}
+
 /* ---- ad-host blocklist unit ------------------------------------------- */
 
 static void
@@ -1011,6 +1269,8 @@ main(void)
 	test_multi_series_containment();
 	test_multi_series_absolute();
 	test_ad_trap();
+	test_kissanime_shape();
+	test_filename_as_param();
 	test_ad_host_blocklist();
 
 	if (failures == 0)

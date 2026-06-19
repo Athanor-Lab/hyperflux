@@ -262,6 +262,9 @@ struct scan_ctx {
 	char *visited[SCAN_MAX_FETCHES];
 	size_t nvisited;
 	int nfetches;			/* total page fetches so far */
+	/* page0 body for the filename-as-param heuristic. Points into caller's
+	 * buffer; NOT owned. NULL outside of discover_chain recursion. */
+	const char *page0_body;
 };
 
 /* Record `url` as visited; returns 1 if already seen, 0 if newly added/unrecordable.
@@ -582,20 +585,7 @@ static const char *const scan_episode_eres[] = {
 	"<a[^>]+href=[\"']([^\"'<> ]*[?&]ep=[0-9]+[^\"'<> ]*)[\"']",
 };
 
-/* Generalized reusable list EREs paired with scan_episode_eres above: group 1
- * captures the family of episode hrefs (not just the first one). Same index. */
-static const char *const scan_episode_list_eres[] = {
-	"href=[\"']([^\"'<> ]*/ep/[^\"'<> ]+)[\"']",
-	"href=[\"']([^\"'<> ]*/episode/[^\"'<> ]+)[\"']",
-	"href=[\"']([^\"'<> ]*/e/[0-9][^\"'<> ]*)[\"']",
-	"href=[\"']([^\"'<> ]*-episode-[0-9][^\"'<> ]*)[\"']",
-	"href=[\"']([^\"'<> ]*[?&]ep=[0-9]+[^\"'<> ]*)[\"']",
-};
 
-/* A stable path token for each episode family, used to tighten the match line. */
-static const char *const scan_episode_paths[] = {
-	"/ep/", "/episode/", "/e/", "-episode-", "ep=",
-};
 
 /* Media-capture patterns for the chain's final step. group 1 = the media URL,
  * config-safe (REG_EXTENDED-only, no '{', no ' #', lowercase). */
@@ -661,9 +651,15 @@ struct scan_follow {
 	char *ere;	/* capture ERE for this link (owned; strdup'd from table or synthesized) */
 };
 
-/* Forward declaration — defined after detect_series uses it. */
+/* Max hrefs collected for series template grouping (fits episode-10+ comfortably). */
+#define BSF_MAX 128
+
+/* Forward declarations — helpers defined after detect_series. */
 static int detect_series_generic(struct scan_ctx *ctx, const char *body,
 				 char **first_ep);
+static int build_series_from_hrefs(struct scan_ctx *ctx,
+				   char **hrefs, size_t nhrefs,
+				   char **first_ep);
 
 /* Synthesize a reusable capturing ERE from a concrete href `ref`. Literal parts
  * are ERE-escaped; [0-9]+ replaces numeric runs; [A-Za-z0-9_-]+ replaces id-ish
@@ -1176,6 +1172,91 @@ add_chain_candidate(struct scan_ctx *ctx, const char *media_url,
 	return 0;
 }
 
+/* Check whether the media URL's basename appears on page0 as <token>=<basename>
+ * where <token> is [A-Za-z_][A-Za-z0-9_]*. If so, set *out_token and
+ * *out_base (both malloc'd). Returns 1 on match, 0 on no match, -1 on OOM.
+ * Only fires when the full media URL itself is NOT present on page0 (that's the
+ * existing depth-0 direct case, handled separately). See #scan-basename-param. */
+static int
+check_basename_param(const char *page0, const char *media_url,
+		     char **out_token, char **out_base)
+{
+	if (!page0 || !media_url)
+		return 0;
+
+	/* Extract basename: everything after the last '/'. */
+	const char *slash = strrchr(media_url, '/');
+	if (!slash || slash[1] == '\0')
+		return 0;
+	const char *basename = slash + 1;
+	size_t blen = strlen(basename);
+	if (blen == 0)
+		return 0;
+
+	/* Reject if full URL appears literally in page0 (direct case). */
+	if (strstr(page0, media_url) != NULL)
+		return 0;
+
+	/* Search page0 for <token>=<basename> where token=[A-Za-z_][A-Za-z0-9_]* */
+	const char *p = page0;
+	while (*p) {
+		/* Find the basename in the remaining page text. */
+		const char *hit = strstr(p, basename);
+		if (!hit)
+			break;
+
+		/* Walk back past '=' to find the token. */
+		if (hit == page0 || hit[-1] != '=') {
+			p = hit + 1;
+			continue;
+		}
+		/* Find start of token (the identifier before '='). */
+		const char *eq = hit - 1;
+		const char *tok_end = eq;	/* points at '=' */
+		const char *tok_start = tok_end - 1;
+		while (tok_start > page0 &&
+		       (isalnum((unsigned char)tok_start[-1]) ||
+			tok_start[-1] == '_'))
+			tok_start--;
+		size_t tok_len = (size_t)(tok_end - tok_start);
+		if (tok_len == 0 || (!isalpha((unsigned char)tok_start[0]) &&
+		    tok_start[0] != '_')) {
+			p = hit + 1;
+			continue;
+		}
+
+		/* Verify char after basename is a natural delimiter (not alnum/./%). */
+		const char *after = hit + blen;
+		if (*after != '\0' && *after != '"' && *after != '\'' &&
+		    *after != '&' && *after != '<' && *after != '>' &&
+		    *after != ' ' && *after != '\t' && *after != '\n' &&
+		    *after != ')') {
+			p = hit + 1;
+			continue;
+		}
+
+		/* Found a valid <token>=<basename> match. Build media_base. */
+		/* media_base = media_url up to and including the last '/'. */
+		size_t base_len = (size_t)(slash - media_url) + 1; /* includes '/' */
+		char *token = malloc(tok_len + 1);
+		char *base  = malloc(base_len + 1);
+		if (!token || !base) {
+			free(token);
+			free(base);
+			return -1;
+		}
+		memcpy(token, tok_start, tok_len);
+		token[tok_len] = '\0';
+		memcpy(base, media_url, base_len);
+		base[base_len] = '\0';
+
+		*out_token = token;
+		*out_base  = base;
+		return 1;
+	}
+	return 0;
+}
+
 /* Recursively follow watch/play/embed links from `body` (the page at
  * ctx->page_url) looking for media. `steps`/`nsteps` is the chain accumulated so
  * far (link steps). `depth` is the number of hops already taken to reach this
@@ -1206,6 +1287,32 @@ discover_chain(struct scan_ctx *ctx, const char *body, scan_step_t *steps,
 			int ar = add_chain_candidate(ctx, media_url, kind,
 						     SCAN_CTX_PLAYER, steps,
 						     nsteps + 1, depth);
+			/* Filename-as-param heuristic: if page0 body contains
+			 * <token>=<basename> pointing at this media, record it so
+			 * emit can produce a 1-hop template instead of the chain. */
+			if (ar == 0 && depth > 0 && ctx->page0_body) {
+				scan_result_t *res = ctx->result;
+				scan_candidate_t *cand = NULL;
+				for (size_t ci = 0; ci < res->ncands; ci++) {
+					if (strcmp(res->cands[ci].url,
+						   media_url) == 0) {
+						cand = &res->cands[ci];
+						break;
+					}
+				}
+				if (cand && !cand->param_token) {
+					char *tok = NULL, *base = NULL;
+					int hr = check_basename_param(
+						ctx->page0_body, media_url,
+						&tok, &base);
+					if (hr == 1) {
+						cand->param_token = tok;
+						cand->media_base  = base;
+					} else if (hr < 0) {
+						ar = -1; /* OOM */
+					}
+				}
+			}
 			free(media_url);
 			free(cap);
 			return ar;	/* first media hit on a page is enough */
@@ -1262,8 +1369,10 @@ static int
 detect_series(struct scan_ctx *ctx, const char *body, char **first_ep)
 {
 	*first_ep = NULL;
-	scan_result_t *r = ctx->result;
 
+	/* Try each hardcoded episode pattern.  Collect ALL matching hrefs (cap
+	 * BSF_MAX so episode-10+ is not dropped) and pass them to the shared
+	 * anchoring helper so the dominant series wins, not the broadest match. */
 	for (size_t pi = 0;
 	     pi < sizeof(scan_episode_eres) / sizeof(scan_episode_eres[0]);
 	     pi++) {
@@ -1271,37 +1380,32 @@ detect_series(struct scan_ctx *ctx, const char *body, char **first_ep)
 		if (regcomp(&re, scan_episode_eres[pi],
 			    REG_EXTENDED | REG_ICASE) != 0)
 			continue;
-		/* Count distinct hrefs (bounded) and remember the first. */
-		char *seen[SCAN_SERIES_MIN * 4];
-		size_t nseen = 0;
-		char *first = NULL;
+
+		char *hrefs[BSF_MAX];
+		size_t nhrefs = 0;
 		const char *p = body;
 		regmatch_t m[2];
-		while (regexec(&re, p, 2, m, 0) == 0) {
+		while (nhrefs < BSF_MAX && regexec(&re, p, 2, m, 0) == 0) {
 			if (m[1].rm_so < 0)
 				break;
 			size_t len = (size_t)(m[1].rm_eo - m[1].rm_so);
 			char *ref = scan_strndup(p + m[1].rm_so, len);
 			if (!ref) {
-				for (size_t i = 0; i < nseen; i++)
-					free(seen[i]);
-				free(first);
+				for (size_t i = 0; i < nhrefs; i++)
+					free(hrefs[i]);
 				regfree(&re);
 				return -1;
 			}
 			int dup = 0;
-			for (size_t i = 0; i < nseen; i++)
-				if (strcmp(seen[i], ref) == 0) {
+			for (size_t i = 0; i < nhrefs; i++)
+				if (strcmp(hrefs[i], ref) == 0) {
 					dup = 1;
 					break;
 				}
-			if (!dup && nseen < sizeof(seen) / sizeof(seen[0])) {
-				if (!first)
-					first = scan_strdup(ref);
-				seen[nseen++] = ref;
-			} else {
+			if (!dup)
+				hrefs[nhrefs++] = ref;
+			else
 				free(ref);
-			}
 			regoff_t adv = m[0].rm_eo > m[0].rm_so ? m[0].rm_eo
 							       : m[0].rm_so + 1;
 			if (adv <= 0)
@@ -1310,97 +1414,39 @@ detect_series(struct scan_ctx *ctx, const char *body, char **first_ep)
 		}
 		regfree(&re);
 
-		if (nseen >= SCAN_SERIES_MIN && first) {
-			r->is_series = 1;
-			r->list_ere = scan_strdup(scan_episode_list_eres[pi]);
-			r->series_path = scan_strdup(scan_episode_paths[pi]);
-			*first_ep = first;
-			first = NULL;
-			for (size_t i = 0; i < nseen; i++)
-				free(seen[i]);
-			if (!r->list_ere || !r->series_path)
-				return -1;
-			return 0;
+		if (nhrefs < SCAN_SERIES_MIN) {
+			for (size_t i = 0; i < nhrefs; i++)
+				free(hrefs[i]);
+			continue;
 		}
-		for (size_t i = 0; i < nseen; i++)
-			free(seen[i]);
-		free(first);
+
+		/* Ownership transferred; build_series_from_hrefs frees hrefs[]. */
+		int rc = build_series_from_hrefs(ctx, hrefs, nhrefs, first_ep);
+		if (rc != 0 || ctx->result->is_series)
+			return rc;
+		/* Helper freed hrefs[] but found no dominant group; try next pattern. */
 	}
+
+	if (ctx->result->is_series)
+		return 0;
+
 	/* Fallback: structural template-based detection for non-standard URLs. */
 	return detect_series_generic(ctx, body, first_ep);
 }
 
-/* Structural (template-based) series detection. Collect same-site anchor hrefs,
- * normalize by replacing [0-9]+ with '#', group by template. If any template
- * has >= SCAN_SERIES_MIN distinct hrefs, declare a series and build list_ere. */
+/* Shared helper: given an array of `nhrefs` distinct hrefs (all owned, freed
+ * before return), select the dominant series group by template relatedness to
+ * ctx->page_url, build an anchored list_ere, and return it + the first episode
+ * href.  Sets r->is_series / r->list_ere / r->series_path on success.
+ * Returns 0 (with *first_ep set) if a series was found, 0 (NULL) if not, -1
+ * on OOM. All hrefs[] entries and templates[] are freed before return. */
 static int
-detect_series_generic(struct scan_ctx *ctx, const char *body, char **first_ep)
+build_series_from_hrefs(struct scan_ctx *ctx,
+			char **hrefs, size_t nhrefs,
+			char **first_ep)
 {
 	*first_ep = NULL;
 	scan_result_t *r = ctx->result;
-
-	static const char anc_ere[] =
-		"<a[^>]+href=[\"']([^\"'<> ]+)[\"']";
-	regex_t re;
-	if (regcomp(&re, anc_ere, REG_EXTENDED | REG_ICASE) != 0)
-		return 0;
-
-	char *page_host = url_host(ctx->page_url);
-
-#define GS_MAX 128
-	/* Collected hrefs. */
-	char *hrefs[GS_MAX];
-	size_t nhrefs = 0;
-
-	const char *p = body;
-	regmatch_t m[2];
-	while (nhrefs < GS_MAX && regexec(&re, p, 2, m, 0) == 0) {
-		if (m[1].rm_so < 0)
-			break;
-		size_t len = (size_t)(m[1].rm_eo - m[1].rm_so);
-		char *ref = scan_strndup(p + m[1].rm_so, len);
-		if (!ref) {
-			regfree(&re);
-			free(page_host);
-			for (size_t i = 0; i < nhrefs; i++)
-				free(hrefs[i]);
-			return -1;
-		}
-		regoff_t adv = m[0].rm_eo > m[0].rm_so ? m[0].rm_eo
-							 : m[0].rm_so + 1;
-		p += adv;
-
-		if (!scan_followable_ref(ref)) {
-			free(ref);
-			continue;
-		}
-		/* Same-site only. */
-		char *abs = extractor_resolve_url(ctx->page_url, ref);
-		if (!abs) {
-			free(ref);
-			continue;
-		}
-		char *h = url_host(abs);
-		int same = (h && page_host && strcmp(h, page_host) == 0);
-		free(h);
-		free(abs);
-		if (!same) {
-			free(ref);
-			continue;
-		}
-		/* Dedup. */
-		int dup = 0;
-		for (size_t i = 0; i < nhrefs && !dup; i++)
-			if (strcmp(hrefs[i], ref) == 0)
-				dup = 1;
-		if (dup) {
-			free(ref);
-			continue;
-		}
-		hrefs[nhrefs++] = ref;
-	}
-	regfree(&re);
-	free(page_host);
 
 	if (nhrefs < SCAN_SERIES_MIN) {
 		for (size_t i = 0; i < nhrefs; i++)
@@ -1409,7 +1455,7 @@ detect_series_generic(struct scan_ctx *ctx, const char *body, char **first_ep)
 	}
 
 	/* Build templates: replace maximal [0-9]+ runs with '#'. */
-	char *templates[GS_MAX];
+	char *templates[BSF_MAX];
 	for (size_t i = 0; i < nhrefs; i++) {
 		char tmp[512];
 		size_t to = 0;
@@ -1433,26 +1479,23 @@ detect_series_generic(struct scan_ctx *ctx, const char *body, char **first_ep)
 		}
 	}
 
-	/* Select the best template, preferring the one most related to the
-	 * landing URL (so a page listing multiple series picks the right one).
-	 * Relatedness: (1) generalized ERE matches ctx->page_url (user passed
-	 * an episode); (2) longest literal path-prefix with landing path;
-	 * (3) member count as tiebreaker. Fall back to count-only if nothing
-	 * is related. See #scan-series-anchor. */
+	/* Select the dominant template: prefer the one most related to the
+	 * landing URL so a multi-series page picks the right one. Tiers:
+	 * 2 = generalized ERE matches landing URL (user is on an episode);
+	 * 1 = longest common path prefix with landing path;
+	 * 0 = no relation (fall back to member count). See #scan-series-anchor. */
 	const char *landing_path = url_path_ptr(ctx->page_url);
 
 	char *best_tmpl = NULL;
 	size_t best_cnt = 0;
-	int    best_rel  = -1;	/* relatedness tier: 2 > 1 > 0 > -1 */
-	size_t best_pfx  = 0;	/* common prefix length with landing */
+	int    best_rel  = -1;
+	size_t best_pfx  = 0;
 
 	for (size_t i = 0; i < nhrefs; i++) {
-		/* Only consider templates with a unique pointer (avoid re-scoring
-		 * duplicates — we use the first occurrence of each string). */
+		/* Skip duplicate template strings (score each unique template once). */
 		int seen = 0;
 		for (size_t k = 0; k < i && !seen; k++)
-			if (templates[k] == templates[i] ||
-			    strcmp(templates[k], templates[i]) == 0)
+			if (strcmp(templates[k], templates[i]) == 0)
 				seen = 1;
 		if (seen)
 			continue;
@@ -1464,8 +1507,7 @@ detect_series_generic(struct scan_ctx *ctx, const char *body, char **first_ep)
 		if (cnt < SCAN_SERIES_MIN)
 			continue;
 
-		/* Build the candidate's generalized ERE body to test against
-		 * the landing URL (tier 2). */
+		/* Build candidate ERE for tier-2 test (landing matches an episode). */
 		char e_body[512];
 		size_t eb = 0;
 		for (const char *q = templates[i]; *q && eb + 10 < sizeof(e_body); ) {
@@ -1484,14 +1526,11 @@ detect_series_generic(struct scan_ctx *ctx, const char *body, char **first_ep)
 		char cand_ere[600];
 		snprintf(cand_ere, sizeof(cand_ere), "href=[\"'](%s)[\"']", e_body);
 
-		int rel = 0;	/* default: no direct relation */
+		int rel = 0;
 		size_t pfx = 0;
 
 		regex_t cre;
 		if (regcomp(&cre, cand_ere, REG_EXTENDED) == 0) {
-			/* Strongest signal: the landing matches (user on an episode).
-			 * Test the absolute URL and its path so a relative-href template
-			 * still matches a path-only landing. */
 			char hb[1024];
 			regmatch_t cm[2];
 			snprintf(hb, sizeof(hb), "href=\"%s\"", ctx->page_url);
@@ -1505,18 +1544,16 @@ detect_series_generic(struct scan_ctx *ctx, const char *body, char **first_ep)
 			regfree(&cre);
 		}
 		if (rel < 2) {
-			/* Tier 1: longest common path prefix, path-to-path so an
-			 * absolute-href template anchors to the right series. */
-			pfx = common_prefix_len(ref_path_ptr(templates[i]), landing_path);
-			if (pfx > 1)	/* more than just '/' */
+			pfx = common_prefix_len(ref_path_ptr(templates[i]),
+						landing_path);
+			if (pfx > 1)
 				rel = 1;
 		}
 
-		/* Pick if better related, or same relation with more members
-		 * or longer prefix. */
 		int better = (rel > best_rel) ||
 			     (rel == best_rel && pfx > best_pfx) ||
-			     (rel == best_rel && pfx == best_pfx && cnt > best_cnt);
+			     (rel == best_rel && pfx == best_pfx &&
+			      cnt > best_cnt);
 		if (!best_tmpl || better) {
 			best_tmpl = templates[i];
 			best_cnt  = cnt;
@@ -1533,8 +1570,7 @@ detect_series_generic(struct scan_ctx *ctx, const char *body, char **first_ep)
 		return 0;
 	}
 
-	/* Build the generalized list_ere from the template. Replace '#' with
-	 * [0-9]+; escape ERE metas in literal chars; wrap as href=["'](...)["']. */
+	/* Build list_ere: template '#' -> [0-9]+, ERE-escape literals. */
 	char ere_body[512];
 	size_t eo = 0;
 	for (const char *q = best_tmpl; *q && eo + 10 < sizeof(ere_body); ) {
@@ -1562,7 +1598,7 @@ detect_series_generic(struct scan_ctx *ctx, const char *body, char **first_ep)
 		return 0;
 	}
 
-	/* Verify the generated ERE compiles. */
+	/* Verify the ERE compiles under REG_EXTENDED before committing. */
 	regex_t lre;
 	if (regcomp(&lre, list_ere_buf, REG_EXTENDED) != 0) {
 		for (size_t i = 0; i < nhrefs; i++) {
@@ -1573,10 +1609,9 @@ detect_series_generic(struct scan_ctx *ctx, const char *body, char **first_ep)
 	}
 	regfree(&lre);
 
-	/* Find the first (lowest-numbered or first-listed) href in this group. */
-	/* Capture first href and template BEFORE freeing the arrays. */
+	/* Capture the template string and first matching href before freeing. */
+	char *tmpl_copy = scan_strdup(best_tmpl);
 	char *first = NULL;
-	char *tmpl_copy = scan_strdup(best_tmpl);	/* best_tmpl points into templates[] */
 	if (!tmpl_copy) {
 		for (size_t k = 0; k < nhrefs; k++) {
 			free(templates[k]);
@@ -1597,7 +1632,6 @@ detect_series_generic(struct scan_ctx *ctx, const char *body, char **first_ep)
 			}
 		}
 	}
-
 	for (size_t i = 0; i < nhrefs; i++) {
 		free(templates[i]);
 		free(hrefs[i]);
@@ -1609,7 +1643,7 @@ detect_series_generic(struct scan_ctx *ctx, const char *body, char **first_ep)
 	}
 
 	r->is_series = 1;
-	r->series_path = tmpl_copy;	/* already strdup'd above */
+	r->series_path = tmpl_copy;
 	r->list_ere = scan_strdup(list_ere_buf);
 	if (!r->list_ere) {
 		free(first);
@@ -1617,7 +1651,62 @@ detect_series_generic(struct scan_ctx *ctx, const char *body, char **first_ep)
 	}
 	*first_ep = first;
 	return 0;
-#undef GS_MAX
+}
+
+/* Structural (template-based) series detection. Harvest same-site anchor hrefs
+ * and delegate to build_series_from_hrefs for template selection. */
+static int
+detect_series_generic(struct scan_ctx *ctx, const char *body, char **first_ep)
+{
+	*first_ep = NULL;
+
+	static const char anc_ere[] = "<a[^>]+href=[\"']([^\"'<> ]+)[\"']";
+	regex_t re;
+	if (regcomp(&re, anc_ere, REG_EXTENDED | REG_ICASE) != 0)
+		return 0;
+
+	char *page_host = url_host(ctx->page_url);
+	char *hrefs[BSF_MAX];
+	size_t nhrefs = 0;
+
+	const char *p = body;
+	regmatch_t m[2];
+	while (nhrefs < BSF_MAX && regexec(&re, p, 2, m, 0) == 0) {
+		if (m[1].rm_so < 0)
+			break;
+		size_t len = (size_t)(m[1].rm_eo - m[1].rm_so);
+		char *ref = scan_strndup(p + m[1].rm_so, len);
+		if (!ref) {
+			regfree(&re);
+			free(page_host);
+			for (size_t i = 0; i < nhrefs; i++)
+				free(hrefs[i]);
+			return -1;
+		}
+		regoff_t adv = m[0].rm_eo > m[0].rm_so ? m[0].rm_eo
+							 : m[0].rm_so + 1;
+		p += adv;
+
+		if (!scan_followable_ref(ref)) { free(ref); continue; }
+		char *abs = extractor_resolve_url(ctx->page_url, ref);
+		if (!abs) { free(ref); continue; }
+		char *h = url_host(abs);
+		int same = (h && page_host && strcmp(h, page_host) == 0);
+		free(h);
+		free(abs);
+		if (!same) { free(ref); continue; }
+		int dup = 0;
+		for (size_t i = 0; i < nhrefs && !dup; i++)
+			if (strcmp(hrefs[i], ref) == 0)
+				dup = 1;
+		if (dup) { free(ref); continue; }
+		hrefs[nhrefs++] = ref;
+	}
+	regfree(&re);
+	free(page_host);
+
+	/* Ownership of hrefs[] transferred to build_series_from_hrefs. */
+	return build_series_from_hrefs(ctx, hrefs, nhrefs, first_ep);
 }
 
 /* Drive the recursive discovery once the landing page yielded no direct media.
@@ -1650,8 +1739,10 @@ scan_recurse(struct scan_ctx *ctx, const char *body, int max_depth)
 			    strlen(ep_body) <= SCAN_MAX_PAGE) {
 				const char *saved = ctx->page_url;
 				ctx->page_url = ep_url;
+				ctx->page0_body = ep_body; /* for basename-param heuristic */
 				rc = discover_chain(ctx, ep_body, steps, 0, 0,
 						    max_depth);
+				ctx->page0_body = NULL;
 				ctx->page_url = saved;
 			}
 			free(ep_body);
@@ -1662,7 +1753,10 @@ scan_recurse(struct scan_ctx *ctx, const char *body, int max_depth)
 	free(first_ep);
 
 	/* Non-series: discover a chain from the landing page itself. */
-	return discover_chain(ctx, body, steps, 0, 0, max_depth);
+	ctx->page0_body = body;
+	int rc2 = discover_chain(ctx, body, steps, 0, 0, max_depth);
+	ctx->page0_body = NULL;
+	return rc2;
 }
 
 /* ---- enrichment (duration / size) ------------------------------------- */
@@ -1921,6 +2015,8 @@ scan_result_free(scan_result_t *r)
 	for (size_t i = 0; i < r->ncands; i++) {
 		free(r->cands[i].url);
 		free(r->cands[i].host);
+		free(r->cands[i].param_token);
+		free(r->cands[i].media_base);
 		for (size_t j = 0; j < r->cands[i].nchain; j++) {
 			free(r->cands[i].chain[j].ere);
 			free(r->cands[i].chain[j].sample);
@@ -1941,22 +2037,47 @@ derive_name(const char *host, char *dst, size_t len)
 		snprintf(dst, len ? len : 1, "site");
 		return;
 	}
-	/* Find the last two dot-separated labels; take the first of those. */
-	const char *last = NULL, *prev = NULL;
-	for (const char *p = host; *p; p++) {
-		if (*p == '.') {
-			prev = last;
-			last = p;
-		}
-	}
+	/* Collect up to 4 dot positions so we can index labels right-to-left. */
+	const char *dots[4];
+	int ndots = 0;
+	for (const char *p = host; *p && ndots < 4; p++)
+		if (*p == '.')
+			dots[ndots++] = p;
+
+	/* Generic second-level / public-suffix tokens (case-insensitive). When the
+	 * second-to-last label matches one of these and there is a third-to-last
+	 * label, step back one more to get the registrable name. See #derive-name. */
+	static const char *const sld_tokens[] = {
+		"com", "co", "net", "org", "edu", "gov", "mil", "ac",
+		"gob", "gouv", "ne", "or", "go", "nom", "ltd", "plc", NULL
+	};
+
 	const char *start;
 	size_t n;
-	if (last && prev) {
-		start = prev + 1;
-		n = (size_t)(last - start);
-	} else if (last) {
+	if (ndots >= 2) {
+		/* last label = dots[ndots-1]+1 .. end
+		 * second-to-last label = dots[ndots-2]+1 .. dots[ndots-1] */
+		const char *sld_start = dots[ndots - 2] + 1;
+		size_t sld_len = (size_t)(dots[ndots - 1] - sld_start);
+		int is_generic = 0;
+		for (int ti = 0; sld_tokens[ti] && !is_generic; ti++) {
+			size_t tl = strlen(sld_tokens[ti]);
+			if (tl == sld_len &&
+			    strncasecmp(sld_start, sld_tokens[ti], tl) == 0)
+				is_generic = 1;
+		}
+		if (is_generic && ndots >= 2) {
+			/* Step back one more to get the registrable label.
+			 * kissanime.com.cv: ndots=2, step to the label before dots[0]. */
+			start = (ndots >= 3) ? dots[ndots - 3] + 1 : host;
+			n = (size_t)(dots[ndots - 2] - start);
+		} else {
+			start = dots[ndots - 2] + 1;
+			n = (size_t)(dots[ndots - 1] - start);
+		}
+	} else if (ndots == 1) {
 		start = host;
-		n = (size_t)(last - host);
+		n = (size_t)(dots[0] - host);
 	} else {
 		start = host;
 		n = strlen(host);
@@ -2074,6 +2195,33 @@ emit_candidate_comments(const scan_result_t *r, FILE *out)
 	fprintf(out, "\n");
 }
 
+/* Emit the 1-hop filename-as-param pipeline when c->param_token is set.
+ * page0 = {url}, capture <token>=(<basename>), output <base>{<token>}. */
+static void
+emit_param_pipeline(const scan_candidate_t *c, FILE *out)
+{
+	/* Build the capture ERE: <token>=([^"'&<> ]+\.<ext>).
+	 * The extension comes from the last '.' in the media basename. */
+	const char *slash = strrchr(c->url, '/');
+	const char *basename = slash ? slash + 1 : c->url;
+	const char *dot = strrchr(basename, '.');
+	/* ERE-escape the extension dot -> \. */
+	char ext_ere[32] = "mp4"; /* fallback */
+	if (dot && dot[1] != '\0') {
+		size_t ei = 0;
+		ext_ere[ei++] = '\\';
+		ext_ere[ei++] = '.';
+		const char *ep = dot + 1;
+		while (*ep && ei < sizeof(ext_ere) - 1)
+			ext_ere[ei++] = *ep++;
+		ext_ere[ei] = '\0';
+	}
+	fprintf(out, "get    page0 <- {url}\n");
+	fprintf(out, "var    %s <- page0 regex %s=([^\"'&<> ]+%s)\n",
+		c->param_token, c->param_token, ext_ere);
+	fprintf(out, "output %s{%s}\n", c->media_base, c->param_token);
+}
+
 /* Emit the multi-step get/var pipeline for a chained candidate `c`, with the
  * first get reading {url}. Each step i<nchain-1 is a LINK step (var linkI +
  * get pageI+1); the final step is the media capture (var media) followed by
@@ -2148,7 +2296,10 @@ scan_emit_config(const scan_result_t *r, int chosen, FILE *out)
 		fprintf(out, "\n");
 		if (c && c->nchain >= 1) {
 			fprintf(out, "# per-episode pipeline ({url} is each episode):\n");
-			emit_chain_pipeline(c, out);
+			if (c->param_token)
+				emit_param_pipeline(c, out);
+			else
+				emit_chain_pipeline(c, out);
 		} else {
 			/* Series detected but no episode media reachable within depth.
 			 * Emit a parseable stub; adjust the media regex before use. */
@@ -2191,9 +2342,14 @@ scan_emit_config(const scan_result_t *r, int chosen, FILE *out)
 
 	/* RECURSIVE non-series: the media is reached via a multi-step chain. */
 	if (c->nchain >= 2) {
-		fprintf(out, "# Media reached via %d hop(s); multi-step config:\n",
-			c->depth);
-		emit_chain_pipeline(c, out);
+		if (c->param_token) {
+			fprintf(out, "# 1-hop filename-as-param config (basename on page0):\n");
+			emit_param_pipeline(c, out);
+		} else {
+			fprintf(out, "# Media reached via %d hop(s); multi-step config:\n",
+				c->depth);
+			emit_chain_pipeline(c, out);
+		}
 		free(host);
 		return 0;
 	}
