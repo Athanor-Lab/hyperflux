@@ -1326,6 +1326,26 @@ episode_outpath(char *dst, size_t dlen, const char *out_name, int out_is_file,
  * directory (or empty), receives per-episode files; a plain -o file name is only
  * honoured for a single selected episode (else it would clobber). Returns 0 if
  * all attempted succeeded, 2 on interrupt, 1 if any failed or on a setup error. */
+
+/* Episode number from a page URL (its last digit run), to order the list 1..N
+ * even when the site lists newest first; -1 if the URL carries no number. */
+static long
+episode_number(const char *url)
+{
+	long n = -1;
+	const char *p = url;
+	while (p && *p) {
+		if (isdigit((unsigned char)*p)) {
+			char *end;
+			n = strtol(p, &end, 10);
+			p = end;
+		} else {
+			p++;
+		}
+	}
+	return n;
+}
+
 static int
 run_series(conf_t *conf, const char *page_url, const char *extract_name,
 	   char **episode_urls, size_t nepisodes, int select_all,
@@ -1356,6 +1376,30 @@ run_series(conf_t *conf, const char *page_url, const char *extract_name,
 	if (!media_urls || !on_disk || !outpaths) {
 		fprintf(stderr, _("flux: out of memory\n"));
 		goto cleanup;
+	}
+
+	/* Order episodes 1..N by episode number so the list does not read newest
+	 * first; URLs with no number keep their original order (stable). */
+	{
+		long *epnum = malloc(nepisodes * sizeof(*epnum));
+		if (epnum) {
+			for (size_t i = 0; i < nepisodes; i++)
+				epnum[i] = episode_number(episode_urls[i]);
+			for (size_t i = 1; i < nepisodes; i++) {
+				char *ku = episode_urls[i];
+				long kn = epnum[i];
+				size_t j = i;
+				while (j > 0 && epnum[j - 1] > kn &&
+				       kn >= 0) {
+					episode_urls[j] = episode_urls[j - 1];
+					epnum[j] = epnum[j - 1];
+					j--;
+				}
+				episode_urls[j] = ku;
+				epnum[j] = kn;
+			}
+			free(epnum);
+		}
 	}
 
 	if (conf->verbose >= 0)
@@ -1424,15 +1468,32 @@ run_series(conf_t *conf, const char *page_url, const char *extract_name,
 		/* Label = episode number + remote filename (basename of the
 		 * resolved media URL); missing pre-selected, on-disk unselected. */
 		for (size_t i = 0; i < nepisodes; i++) {
-			const char *leaf = outpaths[i][0]
-				? (strrchr(outpaths[i], '/')
-				   ? strrchr(outpaths[i], '/') + 1 : outpaths[i])
-				: "(unresolved)";
-			snprintf(labels[i], sizeof(labels[i]), "%2zu  %s",
-				 i + 1, leaf);
+			/* Label by the episode's own URL identity (last path segment),
+			 * so the list reads as real episodes even with placeholder dups. */
+			const char *eu = episode_urls[i];
+			size_t eul = strlen(eu);
+			while (eul > 0 && eu[eul - 1] == '/')
+				eul--;
+			const char *slug = eu;
+			for (size_t k = 0; k < eul; k++)
+				if (eu[k] == '/')
+					slug = eu + k + 1;
+			int slen = (int)(eu + eul - slug);
+			/* A later episode resolving to the same media URL is a
+			 * placeholder duplicate (unaired episode served the latest file). */
+			int dup = 0;
+			for (size_t j = 0; j < i && !dup; j++)
+				if (media_urls[i] && media_urls[j] &&
+				    strcmp(media_urls[i], media_urls[j]) == 0)
+					dup = 1;
+			const char *mark = !media_urls[i] ? _("  (unresolved)")
+					 : dup ? _("  (duplicate)") : "";
+			snprintf(labels[i], sizeof(labels[i]), "%2zu  %.*s%s",
+				 i + 1, slen, slug, mark);
 			items[i].label = labels[i];
 			items[i].on_disk = on_disk[i];
-			items[i].selected = on_disk[i] ? 0 : 1;
+			items[i].selected =
+				(on_disk[i] || dup || !media_urls[i]) ? 0 : 1;
 		}
 		/* Header name: a forced config name, else the /play/ slug with its
 		 * trailing ".<id>" dropped (e.g. dr-stone-4-part-3-ita). */
@@ -1502,7 +1563,10 @@ run_series(conf_t *conf, const char *page_url, const char *extract_name,
 	for (size_t i = 0; i < nepisodes && run; i++) {
 		if (!sel[i])
 			continue;
-		if (on_disk[i]) {	/* already present: skip, never re-download */
+		/* Skip if already present, including a file written earlier in this
+		 * run (placeholder episodes share one file). Re-check at download time. */
+		if (on_disk[i] ||
+		    (outpaths[i][0] && access(outpaths[i], F_OK) == 0)) {
 			printf(_("\n=== episode %zu/%zu: already on disk, skipping (%s) ===\n"),
 			       i + 1, nepisodes, outpaths[i]);
 			skipped++;
