@@ -276,8 +276,8 @@ msgstr ""
 msgid "flux: scan failed: %s\n"
 msgstr ""
 
-#: src/text.c:295 src/text.c:376 src/text.c:478 src/text.c:491 src/text.c:1357
-#: src/text.c:1393 src/text.c:1421 src/text.c:1479
+#: src/text.c:295 src/text.c:376 src/text.c:478 src/text.c:491 src/text.c:1377
+#: src/text.c:1437 src/text.c:1465 src/text.c:1540
 #, c-format
 msgid "flux: out of memory\n"
 msgstr ""
@@ -440,7 +440,7 @@ msgstr ""
 msgid "Speed"
 msgstr "スピード"
 
-#: src/text.c:922 src/text.c:945 src/text.c:1524
+#: src/text.c:922 src/text.c:945 src/text.c:1588
 #, c-format
 msgid "Extracted media URL: %s\n"
 msgstr ""
@@ -514,112 +514,120 @@ msgstr ""
 "\n"
 "%s を %s にダウンロード。(%.2f KB/s)\n"
 
-#: src/text.c:1344
+#: src/text.c:1364
 #, c-format
 msgid "Use either --all or --episodes, not both.\n"
 msgstr ""
 
-#: src/text.c:1362
+#: src/text.c:1406
 #, c-format
 msgid "Resolving %zu episodes\n"
 msgstr ""
 
-#: src/text.c:1411
+#: src/text.c:1455
 #, c-format
 msgid ""
 "flux: %zu episodes found; pass --all or --episodes to choose non-"
 "interactively.\n"
 msgstr ""
 
-#: src/text.c:1459
+#: src/text.c:1489
+msgid "  (unresolved)"
+msgstr ""
+
+#: src/text.c:1490
+msgid "  (duplicate)"
+msgstr ""
+
+#: src/text.c:1520
 #, c-format
 msgid "%s  select episodes to download"
 msgstr ""
 
-#: src/text.c:1468
+#: src/text.c:1529
 #, c-format
 msgid "flux: episode selection cancelled.\n"
 msgstr ""
 
-#: src/text.c:1473
+#: src/text.c:1534
 #, c-format
 msgid "flux: no episodes selected.\n"
 msgstr ""
 
-#: src/text.c:1496
+#: src/text.c:1557
 #, c-format
 msgid ""
 "Refusing to write %zu episodes to a single file '%s'; use a directory.\n"
 msgstr ""
 
-#: src/text.c:1506
+#: src/text.c:1570
 #, c-format
 msgid ""
 "\n"
 "=== episode %zu/%zu: already on disk, skipping (%s) ===\n"
 msgstr ""
 
-#: src/text.c:1513
+#: src/text.c:1577
 #, c-format
 msgid ""
 "\n"
 "=== episode %zu/%zu: %s ===\n"
 msgstr ""
 
-#: src/text.c:1518
+#: src/text.c:1582
 #, c-format
 msgid "flux: episode %zu: could not resolve media URL.\n"
 msgstr ""
 
-#: src/text.c:1534
+#: src/text.c:1598
 #, c-format
 msgid ""
 "\n"
 "Episodes: %zu requested, %zu downloaded, %zu skipped (on disk), %zu failed.\n"
 msgstr ""
 
-#: src/text.c:1687
+#: src/text.c:1751
 msgid "Kilo"
 msgstr "キロ"
 
-#: src/text.c:1687
+#: src/text.c:1751
 msgid "Mega"
 msgstr "メガ"
 
-#: src/text.c:1687
+#: src/text.c:1751
 msgid "Giga"
 msgstr "ギガ"
 
-#: src/text.c:1687
+#: src/text.c:1751
 msgid "Tera"
 msgstr "テラ"
 
-#: src/text.c:1693
+#: src/text.c:1757
 #, c-format
 msgid "%g %sbyte(s)"
 msgstr "%g %sバイト"
 
-#: src/text.c:1709
+#: src/text.c:1773
 #, c-format
 msgid "%i:%02i:%02i hour(s)"
 msgstr "%i 時 %02i 分 %02i 秒"
 
-#: src/text.c:1711
+#: src/text.c:1775
 #, c-format
 msgid "%i:%02i minute(s)"
 msgstr "%i 分 %02i 秒"
 
-#: src/text.c:1713
+#: src/text.c:1777
 #, fuzzy, c-format
 msgid "%i second(s)"
 msgstr "%i 秒"
 
-#: src/text.c:1815
+#: src/text.c:1879
 #, c-format
 msgid "Can't setup alternate output. Deactivating.\n"
 msgstr "代替出力を設定できません。 それを無効に。\n"
 
-#: src/text.c:1878
+#: src/text.c:1942
 #, fuzzy, c-format
 msgid ""
 "Usage: flux [options] url1 [url2] [url...]\n"
@@ -664,7 +672,7 @@ msgstr ""
 "https://github.com/axel-download-accelerator/axel/issues にバグ報告を行なって"
 "ください\n"
 
-#: src/text.c:1901
+#: src/text.c:1965
 #, fuzzy, c-format
 msgid ""
 "Usage: flux [options] url1 [url2] [url...]\n"
@@ -724,16 +732,16 @@ msgstr ""
 "https://github.com/axel-download-accelerator/axel/issues にバグ報告を行なって"
 "ください\n"
 
-#: src/text.c:1940
+#: src/text.c:2004
 #, fuzzy, c-format
 msgid "Hyperflux %s (%s)\n"
 msgstr "Axel %s (%s)\n"
 
-#: src/text.c:1954
+#: src/text.c:2018
 msgid "and others."
 msgstr "そして他の者。"
 
-#: src/text.c:1955
+#: src/text.c:2019
 msgid ""
 "Please, see the CREDITS file.\n"
 "\n"
