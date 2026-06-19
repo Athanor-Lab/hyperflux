@@ -531,16 +531,24 @@ run_save_config(conf_t *conf, const char *id)
 		fprintf(stderr, _("flux: install path too long.\n"));
 		return 1;
 	}
-	if (access(dest, F_OK) == 0) {
+	/* Create atomically: O_EXCL refuses to clobber an existing active config
+	 * without a separate access() check, so there is no TOCTOU race. See #scan-save. */
+	int fd = open(dest, O_WRONLY | O_CREAT | O_EXCL, 0644);
+	if (fd < 0) {
 		free(buf);
-		fprintf(stderr,
-			_("flux: %s already exists; pass a different id or remove it.\n"),
-			dest);
+		if (errno == EEXIST)
+			fprintf(stderr,
+				_("flux: %s already exists; pass a different id or remove it.\n"),
+				dest);
+		else
+			fprintf(stderr, _("flux: cannot write config to %s: %s\n"),
+				dest, strerror(errno));
 		return 1;
 	}
-
-	FILE *out = fopen(dest, "w");
+	FILE *out = fdopen(fd, "w");
 	if (!out) {
+		close(fd);
+		remove(dest);
 		free(buf);
 		fprintf(stderr, _("flux: cannot write config to %s: %s\n"),
 			dest, strerror(errno));
