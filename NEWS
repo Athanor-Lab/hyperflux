@@ -1,3 +1,24 @@
+Hyperflux (unreleased)
+======================
+
+--extract-scan now reaches players that sit a few clicks away. When the landing
+page has no direct media, flux follows internal watch/play/embed links a bounded
+number of hops, re-scans each page, and when it finds the media it writes a
+multi-step config that walks the same path at download time. Series index pages
+are recognised too: the generated config lists the episodes and resolves each one
+through the per-episode pipeline. The crawl is content-driven: it follows
+promising links even when their URLs do not match a known watch/play pattern,
+ranks them by relevance, stays inside the series you are scanning, and skips ad
+and onclick/popunder traps. Control how far it looks with --extract-scan-depth=N
+(default 2, max 3).
+
+Scanning no longer writes straight into your active config dir. flux prints the
+config it generates, stashes a pending copy, and tells you the id to run
+"flux --save-config <id>" with when you want it active. The id is stable per
+source URL, so re-scanning the same site gives you the same one, and saving
+refuses to overwrite an existing active config.
+
+
 Hyperflux 2.0.0 (2026-06-18)
 ============================
 

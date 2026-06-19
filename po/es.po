@@ -199,7 +199,7 @@ msgstr "Protocolo no soportado\n"
 msgid "Secure protocol is not supported\n"
 msgstr "Protocolo seguro no está soportado\n"
 
-#: src/conn.c:477 src/ftp.c:135
+#: src/conn.c:477 src/ftp.c:135 src/http.c:616
 #, c-format
 msgid "Too many redirects.\n"
 msgstr "Demasiadas redirecciones.\n"
@@ -238,7 +238,7 @@ msgstr "Error abriendo conexión de datos pasiva.\n"
 msgid "Error writing command %s\n"
 msgstr "Error escribiendo el comando %s\n"
 
-#: src/ftp.c:322 src/http.c:252
+#: src/ftp.c:322 src/http.c:261
 #, c-format
 msgid "Connection gone.\n"
 msgstr "Conexión desaparecida.\n"
@@ -248,12 +248,132 @@ msgstr "Conexión desaparecida.\n"
 msgid "Invalid proxy string: %s\n"
 msgstr "Cadena de proxy inválida: %s\n"
 
-#: src/http.c:240
+#: src/http.c:249
 #, c-format
 msgid "Connection gone while writing.\n"
 msgstr "Conexión desaparecida al escribir.\n"
 
-#: src/text.c:158
+#: src/http.c:480
+#, c-format
+msgid "Fetched body too large.\n"
+msgstr ""
+
+#: src/http.c:525
+#, c-format
+msgid "Only http(s) is supported for fetch.\n"
+msgstr ""
+
+#: src/http.c:612 src/http.c:620
+#, c-format
+msgid "Redirect URL too long.\n"
+msgstr ""
+
+#: src/http.c:628
+#, c-format
+msgid "Fetch failed: HTTP %d\n"
+msgstr ""
+
+#: src/text.c:277
+#, c-format
+msgid "flux: scan failed: %s\n"
+msgstr ""
+
+#: src/text.c:295 src/text.c:376 src/text.c:478 src/text.c:491 src/text.c:1377
+#: src/text.c:1437 src/text.c:1465 src/text.c:1540
+#, c-format
+msgid "flux: out of memory\n"
+msgstr ""
+
+#: src/text.c:325
+msgid "Select the media stream to extract:"
+msgstr ""
+
+#: src/text.c:331
+#, c-format
+msgid "flux: scan cancelled.\n"
+msgstr ""
+
+#: src/text.c:348 src/text.c:544 src/text.c:553
+#, c-format
+msgid "flux: cannot write config to %s: %s\n"
+msgstr ""
+
+#: src/text.c:359
+#, c-format
+msgid "flux: failed to write generated config.\n"
+msgstr ""
+
+#: src/text.c:364
+#, c-format
+msgid "flux: wrote extractor config to %s\n"
+msgstr ""
+
+#: src/text.c:385
+#, c-format
+msgid "flux: failed to render generated config.\n"
+msgstr ""
+
+#: src/text.c:415
+#, c-format
+msgid "flux: If you want to save this, run: flux --save-config %s\n"
+msgstr ""
+
+#: src/text.c:419
+#, c-format
+msgid "flux: could not stash the config; copy it from the output above.\n"
+msgstr ""
+
+#: src/text.c:431
+#, c-format
+msgid "flux: --save-config needs an id.\n"
+msgstr ""
+
+#: src/text.c:436
+#, c-format
+msgid "flux: invalid config id '%s'.\n"
+msgstr ""
+
+#: src/text.c:443
+#, c-format
+msgid "flux: cannot determine or create the user extractor directory.\n"
+msgstr ""
+
+#: src/text.c:450
+#, c-format
+msgid "flux: config id too long.\n"
+msgstr ""
+
+#: src/text.c:457
+#, c-format
+msgid "flux: no pending config with id %s (run --extract-scan first)\n"
+msgstr ""
+
+#: src/text.c:471
+#, c-format
+msgid "flux: pending config too large.\n"
+msgstr ""
+
+#: src/text.c:531
+#, c-format
+msgid "flux: install path too long.\n"
+msgstr ""
+
+#: src/text.c:541
+#, c-format
+msgid "flux: %s already exists; pass a different id or remove it.\n"
+msgstr ""
+
+#: src/text.c:563
+#, c-format
+msgid "flux: failed to write %s\n"
+msgstr ""
+
+#: src/text.c:568
+#, c-format
+msgid "flux: saved active extractor config to %s\n"
+msgstr ""
+
+#: src/text.c:635
 #, c-format
 msgid ""
 "Too many custom headers (-H)! Currently only %u custom headers can be "
@@ -262,99 +382,131 @@ msgstr ""
 "Demasiadas cabeceras personalizadas (-H)! Actualmente sólo %u cabeceras "
 "personalizadas pueden anexarse.\n"
 
-#: src/text.c:234
+#: src/text.c:711
 #, c-format
 msgid "Can't redirect stdout to /dev/null.\n"
 msgstr "No se puede redirigir stdout a /dev/null.\n"
 
-#: src/text.c:278
+#: src/text.c:742
+#, c-format
+msgid "Invalid --extract-scan-depth value '%s' (0-%d).\n"
+msgstr ""
+
+#: src/text.c:748
+#, c-format
+msgid "flux: --extract-scan-depth clamped to %d (max).\n"
+msgstr ""
+
+#: src/text.c:765
+#, c-format
+msgid "Invalid --mux value '%s' (use mp4 or ts).\n"
+msgstr ""
+
+#: src/text.c:823
 #, c-format
 msgid "Error when trying to read URL (Too long?).\n"
 msgstr "Error al intentar leer la URL (¿demasiado larga?).\n"
 
-#: src/text.c:288
+#: src/text.c:833
 #, c-format
 msgid "Can't handle URLs of length over %zu\n"
 msgstr "No se pueden manejar URLs de longitud mayor a %zu\n"
 
-#: src/text.c:303
+#: src/text.c:853
 #, c-format
 msgid "Doing search...\n"
 msgstr "Buscando...\n"
 
-#: src/text.c:306
+#: src/text.c:856
 #, c-format
 msgid "File not found\n"
 msgstr "Archivo no encontrado\n"
 
-#: src/text.c:311
+#: src/text.c:861
 #, c-format
 msgid "Testing speeds, this can take a while...\n"
 msgstr "Probando velocidades, esto puede tomar un tiempo...\n"
 
-#: src/text.c:314
+#: src/text.c:864
 #, c-format
 msgid "Speed testing failed\n"
 msgstr "Falló la prueba de velocidad\n"
 
-#: src/text.c:322
+#: src/text.c:872
 #, c-format
 msgid "%i usable servers found, will use these URLs:\n"
 msgstr "%i servidores usables encontrados, se utilizarán éstas URLs:\n"
 
-#: src/text.c:325
+#: src/text.c:875
 msgid "Speed"
 msgstr "Velocidad"
 
-#: src/text.c:339
+#: src/text.c:922 src/text.c:945 src/text.c:1588
+#, c-format
+msgid "Extracted media URL: %s\n"
+msgstr ""
+
+#: src/text.c:962
 #, c-format
 msgid "Invalid URL pattern, or too many URLs (max %d).\n"
 msgstr ""
 
-#: src/text.c:348
+#: src/text.c:973
 #, c-format
 msgid ""
 "Refusing to write %zu downloads to a single file '%s'; use a directory or #N "
 "in --output.\n"
 msgstr ""
 
-#: src/text.c:359
+#: src/text.c:992
 #, c-format
 msgid ""
 "\n"
 "=== %zu/%zu: %s ===\n"
 msgstr ""
 
-#: src/text.c:378
+#: src/text.c:1013
 #, c-format
 msgid ""
 "\n"
 "%zu of %zu downloads completed.\n"
 msgstr ""
 
-#: src/text.c:423
+#: src/text.c:1021
+#, c-format
+msgid ""
+"flux: %s looks like a web page, not a media file; no extractor config "
+"matched. Try: flux --extract-scan \"%s\"\n"
+msgstr ""
+
+#: src/text.c:1034
+#, c-format
+msgid "Warning: --extract is ignored with multiple URLs.\n"
+msgstr ""
+
+#: src/text.c:1077
 #, c-format
 msgid "Initializing download: %s\n"
 msgstr "Inicializando descarga: %s\n"
 
-#: src/text.c:446
+#: src/text.c:1100
 #, c-format
 msgid "Filename too long!\n"
 msgstr "¡Nombre de archivo demasiado largo!\n"
 
-#: src/text.c:459
+#: src/text.c:1113
 #, c-format
 msgid "No state file, cannot resume!\n"
 msgstr "¡No hay archivo de estado, no se puede reanudar!\n"
 
-#: src/text.c:463
+#: src/text.c:1117
 #, c-format
 msgid "State file found, but no downloaded data. Starting from scratch.\n"
 msgstr ""
 "Archivo de estado encontrado, pero no hay datos descargados. Comenzando "
 "desde cero.\n"
 
-#: src/text.c:551
+#: src/text.c:1209
 #, c-format
 msgid ""
 "\n"
@@ -363,48 +515,120 @@ msgstr ""
 "\n"
 "Descargado %s en %s. (%.2f KB/s)\n"
 
-#: src/text.c:660
+#: src/text.c:1364
+#, c-format
+msgid "Use either --all or --episodes, not both.\n"
+msgstr ""
+
+#: src/text.c:1406
+#, c-format
+msgid "Resolving %zu episodes\n"
+msgstr ""
+
+#: src/text.c:1455
+#, c-format
+msgid ""
+"flux: %zu episodes found; pass --all or --episodes to choose non-"
+"interactively.\n"
+msgstr ""
+
+#: src/text.c:1489
+msgid "  (unresolved)"
+msgstr ""
+
+#: src/text.c:1490
+msgid "  (duplicate)"
+msgstr ""
+
+#: src/text.c:1520
+#, c-format
+msgid "%s  select episodes to download"
+msgstr ""
+
+#: src/text.c:1529
+#, c-format
+msgid "flux: episode selection cancelled.\n"
+msgstr ""
+
+#: src/text.c:1534
+#, c-format
+msgid "flux: no episodes selected.\n"
+msgstr ""
+
+#: src/text.c:1557
+#, c-format
+msgid ""
+"Refusing to write %zu episodes to a single file '%s'; use a directory.\n"
+msgstr ""
+
+#: src/text.c:1570
+#, c-format
+msgid ""
+"\n"
+"=== episode %zu/%zu: already on disk, skipping (%s) ===\n"
+msgstr ""
+
+#: src/text.c:1577
+#, c-format
+msgid ""
+"\n"
+"=== episode %zu/%zu: %s ===\n"
+msgstr ""
+
+#: src/text.c:1582
+#, c-format
+msgid "flux: episode %zu: could not resolve media URL.\n"
+msgstr ""
+
+#: src/text.c:1598
+#, c-format
+msgid ""
+"\n"
+"Episodes: %zu requested, %zu downloaded, %zu skipped (on disk), %zu failed.\n"
+msgstr ""
+
+#: src/text.c:1751
 msgid "Kilo"
 msgstr "Kilo"
 
-#: src/text.c:660
+#: src/text.c:1751
 msgid "Mega"
 msgstr "Mega"
 
-#: src/text.c:660
+#: src/text.c:1751
 msgid "Giga"
 msgstr "Giga"
 
-#: src/text.c:660
+#: src/text.c:1751
 msgid "Tera"
 msgstr "Tera"
 
-#: src/text.c:666
+#: src/text.c:1757
 #, c-format
 msgid "%g %sbyte(s)"
 msgstr "%g %sbyte(s)"
 
-#: src/text.c:682
+#: src/text.c:1773
 #, c-format
 msgid "%i:%02i:%02i hour(s)"
 msgstr "%i:%02i:%02i hora(s)"
 
-#: src/text.c:684
+#: src/text.c:1775
 #, c-format
 msgid "%i:%02i minute(s)"
 msgstr "%i:%02i minuto(s)"
 
-#: src/text.c:686
+#: src/text.c:1777
 #, c-format
 msgid "%i second(s)"
 msgstr "%i segundo(s)"
 
-#: src/text.c:788
+#: src/text.c:1879
 #, c-format
 msgid "Can't setup alternate output. Deactivating.\n"
 msgstr "No se puede configurar la salida alternativa. Desactivando.\n"
 
-#: src/text.c:851
+#: src/text.c:1942
 #, fuzzy, c-format
 msgid ""
 "Usage: flux [options] url1 [url2] [url...]\n"
@@ -428,7 +652,7 @@ msgid ""
 "-T x\tSet I/O and connection timeout\n"
 "-V\tVersion information\n"
 "\n"
-"Visit https://github.com/flux-download-accelerator/flux/issues\n"
+"Visit https://example.invalid/hyperflux/issues\n"
 msgstr ""
 "Uso: axel [opciones] url1 [url2] [url...]\n"
 "\n"
@@ -452,7 +676,7 @@ msgstr ""
 "\n"
 "Visita https://github.com/axel-download-accelerator/axel/issues\n"
 
-#: src/text.c:874
+#: src/text.c:1965
 #, fuzzy, c-format
 msgid ""
 "Usage: flux [options] url1 [url2] [url...]\n"
@@ -476,10 +700,22 @@ msgid ""
 "(0-100)\n"
 "--help\t\t\t-h\tThis information\n"
 "--timeout=x\t\t-T x\tSet I/O and connection timeout\n"
+"--extract=name\t\t\tForce a named extractor config\n"
+"--extract-list\t\t\tList discovered extractor configs\n"
+"--extract-scan=url\t\tScan a page, print the config, and suggest --save-"
+"config (-o FILE writes to a path)\n"
+"--extract-scan-depth=N\t\tHops to follow for watch/play/embed pages (default "
+"2, max 3)\n"
+"--save-config=id\t\tSave a previously scanned pending config (its id) "
+"active\n"
+"--yes\t\t\t\tNon-interactive: auto-pick the top candidate\n"
+"--all\t\t\t\tSeries: download every episode (no prompt)\n"
+"--episodes=spec\t\t\tSeries: pick episodes, e.g. 1,3-5,8 (1-based)\n"
+"--quality=q\t\t\tHLS variant: best|worst|<height> (default best)\n"
+"--mux=c\t\t\t\tHLS container: mp4|ts (default mp4 if ffmpeg)\n"
 "--version\t\t-V\tVersion information\n"
 "\n"
-"Visit https://github.com/flux-download-accelerator/flux/issues to report "
-"bugs\n"
+"Visit https://example.invalid/hyperflux/issues to report bugs\n"
 msgstr ""
 "Uso: axel [opciones] url1 [url2] [url...]\n"
 "\n"
@@ -505,16 +741,16 @@ msgstr ""
 "Visita https://github.com/axel-download-accelerator/axel/issues para "
 "reportar bugs\n"
 
-#: src/text.c:903
+#: src/text.c:2004
 #, fuzzy, c-format
 msgid "Hyperflux %s (%s)\n"
 msgstr "Axel %s (%s)\n"
 
-#: src/text.c:917
+#: src/text.c:2018
 msgid "and others."
 msgstr "y otros."
 
-#: src/text.c:918
+#: src/text.c:2019
 msgid ""
 "Please, see the CREDITS file.\n"
 "\n"

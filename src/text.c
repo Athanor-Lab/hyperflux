@@ -97,6 +97,8 @@ int run = 1;
 #define YES_OPT		262
 #define ALL_OPT		263
 #define EPISODES_OPT	264
+#define EXTRACT_SCAN_DEPTH_OPT	265
+#define SAVE_CONFIG_OPT	266
 
 #ifdef NOGETOPTLONG
 #define getopt_long(a, b, c, d, e) getopt(a, b, c)
@@ -130,6 +132,8 @@ static struct option flux_options[] = {
 	{"mux",             1,      NULL, MUX_OPT},
 	{"all",             0,      NULL, ALL_OPT},
 	{"episodes",        1,      NULL, EPISODES_OPT},
+	{"extract-scan-depth", 1,   NULL, EXTRACT_SCAN_DEPTH_OPT},
+	{"save-config",     1,      NULL, SAVE_CONFIG_OPT},
 	{NULL,              0,      NULL, 0}
 };
 #endif
@@ -209,22 +213,66 @@ extract_size_probe(const char *url, long long *out_size, void *userdata)
 	return 0;
 }
 
+/* FNV-1a 32-bit hash, lowercased input. Used to derive a stable pending-config
+ * id from the source URL so re-scanning the same site yields the same id. */
+static unsigned long
+fnv1a_url(const char *s)
+{
+	unsigned long h = 2166136261UL;
+	for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+		h ^= (unsigned long)tolower(*p);
+		h *= 16777619UL;
+		h &= 0xffffffffUL;
+	}
+	return h;
+}
+
+/* Build the pending-config id "<name>-<5 hex>" (lowercase, filesystem-safe)
+ * from the scan result and its source URL. Returns 0 on success, -1 on error. */
+static int
+scan_pending_id(const scan_result_t *r, const char *src_url, char *dst,
+		size_t len)
+{
+	char name[128];
+	if (scan_config_name(r, name, sizeof(name)) != 0)
+		return -1;
+	unsigned long h = fnv1a_url(src_url) & 0xfffffUL;	/* 20 bits -> 5 hex */
+	int n = snprintf(dst, len, "%s-%05lx", name, h);
+	return (n > 0 && (size_t)n < len) ? 0 : -1;
+}
+
+/* Build <user-extractor-dir>/.pending into dst and create it (0700). Returns 1
+ * on success, 0 on failure. The dir is hidden so config discovery skips it. */
+static int
+scan_pending_dir(char *dst, size_t len)
+{
+	char base[4096];
+	if (!extractor_user_dir(base, sizeof(base), 1))
+		return 0;
+	int n = snprintf(dst, len, "%s/.pending", base);
+	if (n <= 0 || (size_t)n >= len)
+		return 0;
+	if (mkdir(dst, 0700) != 0 && errno != EEXIST)
+		return 0;
+	return 1;
+}
+
 /* Run --extract-scan: scan `page_url`, optionally disambiguate via the TUI, and
  * emit a generated config. Output destination:
- *   - no -o (out_file NULL/empty): SAVE active into the user extractor dir as
- *     <user-dir>/<name>.conf (the dir is created). Refuses to overwrite an
- *     existing auto-path so a hand-tuned config is never clobbered.
- *   - '-o -' : write to stdout (the legacy default).
- *   - '-o FILE': write to FILE (explicit override, may overwrite).
+ *   - no -o (out_file NULL/empty) or '-o -': PRINT the config to stdout, stash
+ *     it to <user-dir>/.pending/<id>.conf, and hint how to save it active with
+ *     `flux --save-config <id>`.
+ *   - '-o FILE': write to FILE (explicit override, may overwrite; no stash/hint).
+ * `max_depth` bounds the recursive watch/play/embed discovery (#scan-recur).
  * `auto_yes` skips the TUI and picks the top-ranked candidate. Returns 0 on
  * success, 1 on any error (matching the caller's exit-code convention). */
 static int
 run_extract_scan(conf_t *conf, const char *page_url, const char *out_file,
-		 int auto_yes)
+		 int max_depth, int auto_yes)
 {
 	char *err = NULL;
 	scan_result_t *r = scan_page(page_url, extract_http_fetch,
-				     extract_size_probe, conf, &err);
+				     extract_size_probe, max_depth, conf, &err);
 	if (!r) {
 		fprintf(stderr, _("flux: scan failed: %s\n"),
 			err ? err : "unknown error");
@@ -289,82 +337,235 @@ run_extract_scan(conf_t *conf, const char *page_url, const char *out_file,
 	 * silently guess. tui_select_one's fallback already handled the prompt
 	 * above; if it returned a valid index we proceed. */
 
-	/* Resolve the output destination. The auto-save path (no -o) lands in the
-	 * active user dir; '-o -' is stdout; '-o FILE' is an explicit override. */
+	/* '-o FILE' (not '-') writes the config to FILE explicitly; anything else
+	 * (no -o, or '-o -') prints to stdout and stashes a pending copy. */
 	int to_stdout = (out_file && strcmp(out_file, "-") == 0);
 	int explicit_file = (out_file && *out_file && !to_stdout);
 
-	char autopath[MAX_STRING];
-	const char *dest = out_file;	/* path used for messages (explicit case) */
-
-	if (!to_stdout && !explicit_file) {
-		/* Default: save active into <user-dir>/<name>.conf, creating it. */
-		char dir[4096];
-		if (!extractor_user_dir(dir, sizeof(dir), 1)) {
-			fprintf(stderr,
-				_("flux: cannot determine or create the user extractor directory.\n"));
-			scan_result_free(r);
-			return 1;
-		}
-		char name[128];
-		if (scan_config_name(r, name, sizeof(name)) != 0) {
-			fprintf(stderr, _("flux: cannot derive a config name.\n"));
-			scan_result_free(r);
-			return 1;
-		}
-		int n = snprintf(autopath, sizeof(autopath), "%s/%s.conf",
-				 dir, name);
-		if (n <= 0 || (size_t)n >= sizeof(autopath)) {
-			fprintf(stderr, _("flux: extractor config path too long.\n"));
-			scan_result_free(r);
-			return 1;
-		}
-		/* Never silently clobber a hand-tuned config on the auto-path. */
-		if (access(autopath, F_OK) == 0) {
-			fprintf(stderr,
-				_("flux: %s already exists; pass -o to overwrite or choose a path.\n"),
-				autopath);
-			scan_result_free(r);
-			return 1;
-		}
-		dest = autopath;
-	}
-
-	FILE *out = stdout;
-	int close_out = 0;
-	if (!to_stdout) {
-		out = fopen(dest, "w");
+	if (explicit_file) {
+		FILE *out = fopen(out_file, "w");
 		if (!out) {
 			fprintf(stderr, _("flux: cannot write config to %s: %s\n"),
-				dest, strerror(errno));
+				out_file, strerror(errno));
 			scan_result_free(r);
 			return 1;
 		}
-		close_out = 1;
-	}
-
-	int er = scan_emit_config(r, chosen, out);
-	if (close_out) {
+		int er = scan_emit_config(r, chosen, out);
 		if (fclose(out) != 0)
 			er = -1;
-	} else {
-		fflush(out);
+		scan_result_free(r);
+		if (er != 0) {
+			fprintf(stderr,
+				_("flux: failed to write generated config.\n"));
+			return 1;
+		}
+		if (conf->verbose >= 0)
+			fprintf(stderr,
+				_("flux: wrote extractor config to %s\n"),
+				out_file);
+		return 0;
 	}
-	scan_result_free(r);
 
-	if (er != 0) {
-		fprintf(stderr, _("flux: failed to write generated config.\n"));
+	/* Default / '-o -': render to a heap buffer, print to stdout, stash to
+	 * the pending store, and hint how to save it active by id (#scan-recur). */
+	char *cfg = NULL;
+	size_t clen = 0;
+	FILE *mp = open_memstream(&cfg, &clen);
+	if (!mp) {
+		scan_result_free(r);
+		fprintf(stderr, _("flux: out of memory\n"));
 		return 1;
 	}
-	if (close_out && conf->verbose >= 0) {
-		if (explicit_file)
+	int er = scan_emit_config(r, chosen, mp);
+	if (fclose(mp) != 0)
+		er = -1;
+	if (er != 0) {
+		free(cfg);
+		scan_result_free(r);
+		fprintf(stderr, _("flux: failed to render generated config.\n"));
+		return 1;
+	}
+
+	fputs(cfg, stdout);
+	fflush(stdout);
+
+	char id[160];
+	char pdir[4096];
+	char ppath[MAX_STRING];
+	int stashed = 0;
+	if (scan_pending_id(r, page_url, id, sizeof(id)) == 0 &&
+	    scan_pending_dir(pdir, sizeof(pdir))) {
+		int n = snprintf(ppath, sizeof(ppath), "%s/%s.conf", pdir, id);
+		if (n > 0 && (size_t)n < sizeof(ppath)) {
+			FILE *pf = fopen(ppath, "w");
+			if (pf) {
+				if (fputs(cfg, pf) >= 0 && fclose(pf) == 0)
+					stashed = 1;
+				else
+					remove(ppath);	/* drop a partial stash */
+			}
+		}
+	}
+	free(cfg);
+	scan_result_free(r);
+
+	if (conf->verbose >= 0) {
+		if (stashed)
 			fprintf(stderr,
-				_("flux: wrote extractor config to %s\n"), dest);
+				_("flux: If you want to save this, run: flux --save-config %s\n"),
+				id);
 		else
 			fprintf(stderr,
-				_("flux: saved active extractor config to %s\n"),
-				dest);
+				_("flux: could not stash the config; copy it from the output above.\n"));
 	}
+	return 0;
+}
+
+/* Run --save-config <id>: install the pending config <id>.conf into the active
+ * user extractor dir under its declared `name`. Refuses to clobber an existing
+ * active file. Returns 0 on success, 1 on any error. */
+static int
+run_save_config(conf_t *conf, const char *id)
+{
+	if (!id || !*id) {
+		fprintf(stderr, _("flux: --save-config needs an id.\n"));
+		return 1;
+	}
+	/* Reject path separators so an id can't escape the pending dir. */
+	if (strchr(id, '/') || strstr(id, "..")) {
+		fprintf(stderr, _("flux: invalid config id '%s'.\n"), id);
+		return 1;
+	}
+
+	char dir[4096];
+	if (!extractor_user_dir(dir, sizeof(dir), 1)) {
+		fprintf(stderr,
+			_("flux: cannot determine or create the user extractor directory.\n"));
+		return 1;
+	}
+
+	char ppath[MAX_STRING];
+	int n = snprintf(ppath, sizeof(ppath), "%s/.pending/%s.conf", dir, id);
+	if (n <= 0 || (size_t)n >= sizeof(ppath)) {
+		fprintf(stderr, _("flux: config id too long.\n"));
+		return 1;
+	}
+
+	FILE *pf = fopen(ppath, "rb");
+	if (!pf) {
+		fprintf(stderr,
+			_("flux: no pending config with id %s (run --extract-scan first)\n"),
+			id);
+		return 1;
+	}
+
+	/* Read the pending config and parse out its `name` for the filename. */
+	char *buf = NULL;
+	size_t cap = 0, len = 0;
+	for (;;) {
+		if (len + 4096 + 1 > cap) {
+			size_t ncap = cap ? cap * 2 : 8192;
+			if (ncap > (1u << 20)) {	/* configs are tiny */
+				free(buf);
+				fclose(pf);
+				fprintf(stderr, _("flux: pending config too large.\n"));
+				return 1;
+			}
+			char *nb = realloc(buf, ncap);
+			if (!nb) {
+				free(buf);
+				fclose(pf);
+				fprintf(stderr, _("flux: out of memory\n"));
+				return 1;
+			}
+			buf = nb;
+			cap = ncap;
+		}
+		size_t got = fread(buf + len, 1, 4096, pf);
+		len += got;
+		if (got < 4096)
+			break;
+	}
+	fclose(pf);
+	if (!buf) {
+		fprintf(stderr, _("flux: out of memory\n"));
+		return 1;
+	}
+	buf[len] = '\0';
+
+	/* Find the first `name <id>` line to choose the install filename. */
+	char cfgname[128] = "";
+	for (char *line = buf; line && *line; ) {
+		char *eol = strchr(line, '\n');
+		while (*line == ' ' || *line == '\t')
+			line++;
+		if (strncmp(line, "name", 4) == 0 &&
+		    (line[4] == ' ' || line[4] == '\t')) {
+			const char *v = line + 4;
+			while (*v == ' ' || *v == '\t')
+				v++;
+			size_t vn = strcspn(v, " \t\r\n");
+			if (vn > 0 && vn < sizeof(cfgname)) {
+				memcpy(cfgname, v, vn);
+				cfgname[vn] = '\0';
+			}
+			break;
+		}
+		line = eol ? eol + 1 : NULL;
+	}
+	if (!cfgname[0])
+		snprintf(cfgname, sizeof(cfgname), "%s", id);	/* fallback */
+
+	/* Validate cfgname: reject path traversal / shell-hostile chars. See #scan-save. */
+	int cfgname_ok = cfgname[0] != '\0';
+	for (const char *cp = cfgname; *cp && cfgname_ok; cp++)
+		if (!isalnum((unsigned char)*cp) && *cp != '.' && *cp != '_' && *cp != '-')
+			cfgname_ok = 0;
+	if (!cfgname_ok || strstr(cfgname, "..") || strchr(cfgname, '/'))
+		snprintf(cfgname, sizeof(cfgname), "%s", id);
+
+	char dest[MAX_STRING];
+	n = snprintf(dest, sizeof(dest), "%s/%s.conf", dir, cfgname);
+	if (n <= 0 || (size_t)n >= sizeof(dest)) {
+		free(buf);
+		fprintf(stderr, _("flux: install path too long.\n"));
+		return 1;
+	}
+	/* Create atomically: O_EXCL refuses to clobber an existing active config
+	 * without a separate access() check, so there is no TOCTOU race. See #scan-save. */
+	int fd = open(dest, O_WRONLY | O_CREAT | O_EXCL, 0644);
+	if (fd < 0) {
+		free(buf);
+		if (errno == EEXIST)
+			fprintf(stderr,
+				_("flux: %s already exists; pass a different id or remove it.\n"),
+				dest);
+		else
+			fprintf(stderr, _("flux: cannot write config to %s: %s\n"),
+				dest, strerror(errno));
+		return 1;
+	}
+	FILE *out = fdopen(fd, "w");
+	if (!out) {
+		close(fd);
+		remove(dest);
+		free(buf);
+		fprintf(stderr, _("flux: cannot write config to %s: %s\n"),
+			dest, strerror(errno));
+		return 1;
+	}
+	int ok = (fwrite(buf, 1, len, out) == len);
+	if (fclose(out) != 0)
+		ok = 0;
+	free(buf);
+	if (!ok) {
+		remove(dest);
+		fprintf(stderr, _("flux: failed to write %s\n"), dest);
+		return 1;
+	}
+	if (conf->verbose >= 0)
+		fprintf(stderr,
+			_("flux: saved active extractor config to %s\n"), dest);
 	return 0;
 }
 
@@ -395,6 +596,8 @@ main(int argc, char *argv[])
 	const char *hls_mux = NULL;		/* --mux mp4|ts */
 	int select_all = 0;			/* --all: every episode */
 	const char *episodes_spec = NULL;	/* --episodes 1,3-5,8 */
+	int scan_depth = SCAN_DEFAULT_DEPTH;	/* --extract-scan-depth (0..MAX) */
+	const char *save_config_id = NULL;	/* --save-config <id> */
 
 	fn[0] = 0;
 
@@ -531,6 +734,27 @@ main(int argc, char *argv[])
 		case EPISODES_OPT:
 			episodes_spec = optarg;
 			break;
+		case EXTRACT_SCAN_DEPTH_OPT: {
+			char *end = NULL;
+			long d = strtol(optarg, &end, 10);
+			if (!end || *end != '\0' || d < 0) {
+				fprintf(stderr,
+					_("Invalid --extract-scan-depth value '%s' (0-%d).\n"),
+					optarg, SCAN_MAX_DEPTH);
+				goto free_conf;
+			}
+			if (d > SCAN_MAX_DEPTH) {
+				fprintf(stderr,
+					_("flux: --extract-scan-depth clamped to %d (max).\n"),
+					SCAN_MAX_DEPTH);
+				d = SCAN_MAX_DEPTH;
+			}
+			scan_depth = (int)d;
+			break;
+		}
+		case SAVE_CONFIG_OPT:
+			save_config_id = optarg;
+			break;
 		case QUALITY_OPT:
 			hls_quality = optarg;
 			break;
@@ -569,11 +793,18 @@ main(int argc, char *argv[])
 	ssl_init(conf);
 #endif				/* HAVE_SSL */
 
+	/* --save-config installs a pending config by id and exits; handle it
+	 * before the positional-URL dispatch (like --extract-scan). */
+	if (save_config_id) {
+		ret = run_save_config(conf, save_config_id);
+		goto free_conf;
+	}
+
 	/* --extract-scan carries its own URL and writes a config (to -o or
 	 * stdout) instead of downloading; handle it before the positional-URL
 	 * dispatch and exit. */
 	if (scan_url) {
-		ret = run_extract_scan(conf, scan_url, fn, auto_yes);
+		ret = run_extract_scan(conf, scan_url, fn, scan_depth, auto_yes);
 		goto free_conf;
 	}
 
@@ -1095,6 +1326,26 @@ episode_outpath(char *dst, size_t dlen, const char *out_name, int out_is_file,
  * directory (or empty), receives per-episode files; a plain -o file name is only
  * honoured for a single selected episode (else it would clobber). Returns 0 if
  * all attempted succeeded, 2 on interrupt, 1 if any failed or on a setup error. */
+
+/* Episode number from a page URL (its last digit run), to order the list 1..N
+ * even when the site lists newest first; -1 if the URL carries no number. */
+static long
+episode_number(const char *url)
+{
+	long n = -1;
+	const char *p = url;
+	while (p && *p) {
+		if (isdigit((unsigned char)*p)) {
+			char *end;
+			n = strtol(p, &end, 10);
+			p = end;
+		} else {
+			p++;
+		}
+	}
+	return n;
+}
+
 static int
 run_series(conf_t *conf, const char *page_url, const char *extract_name,
 	   char **episode_urls, size_t nepisodes, int select_all,
@@ -1125,6 +1376,30 @@ run_series(conf_t *conf, const char *page_url, const char *extract_name,
 	if (!media_urls || !on_disk || !outpaths) {
 		fprintf(stderr, _("flux: out of memory\n"));
 		goto cleanup;
+	}
+
+	/* Order episodes 1..N by episode number so the list does not read newest
+	 * first; URLs with no number keep their original order (stable). */
+	{
+		long *epnum = malloc(nepisodes * sizeof(*epnum));
+		if (epnum) {
+			for (size_t i = 0; i < nepisodes; i++)
+				epnum[i] = episode_number(episode_urls[i]);
+			for (size_t i = 1; i < nepisodes; i++) {
+				char *ku = episode_urls[i];
+				long kn = epnum[i];
+				size_t j = i;
+				while (j > 0 && epnum[j - 1] > kn &&
+				       kn >= 0) {
+					episode_urls[j] = episode_urls[j - 1];
+					epnum[j] = epnum[j - 1];
+					j--;
+				}
+				episode_urls[j] = ku;
+				epnum[j] = kn;
+			}
+			free(epnum);
+		}
 	}
 
 	if (conf->verbose >= 0)
@@ -1193,15 +1468,32 @@ run_series(conf_t *conf, const char *page_url, const char *extract_name,
 		/* Label = episode number + remote filename (basename of the
 		 * resolved media URL); missing pre-selected, on-disk unselected. */
 		for (size_t i = 0; i < nepisodes; i++) {
-			const char *leaf = outpaths[i][0]
-				? (strrchr(outpaths[i], '/')
-				   ? strrchr(outpaths[i], '/') + 1 : outpaths[i])
-				: "(unresolved)";
-			snprintf(labels[i], sizeof(labels[i]), "%2zu  %s",
-				 i + 1, leaf);
+			/* Label by the episode's own URL identity (last path segment),
+			 * so the list reads as real episodes even with placeholder dups. */
+			const char *eu = episode_urls[i];
+			size_t eul = strlen(eu);
+			while (eul > 0 && eu[eul - 1] == '/')
+				eul--;
+			const char *slug = eu;
+			for (size_t k = 0; k < eul; k++)
+				if (eu[k] == '/')
+					slug = eu + k + 1;
+			int slen = (int)(eu + eul - slug);
+			/* A later episode resolving to the same media URL is a
+			 * placeholder duplicate (unaired episode served the latest file). */
+			int dup = 0;
+			for (size_t j = 0; j < i && !dup; j++)
+				if (media_urls[i] && media_urls[j] &&
+				    strcmp(media_urls[i], media_urls[j]) == 0)
+					dup = 1;
+			const char *mark = !media_urls[i] ? _("  (unresolved)")
+					 : dup ? _("  (duplicate)") : "";
+			snprintf(labels[i], sizeof(labels[i]), "%2zu  %.*s%s",
+				 i + 1, slen, slug, mark);
 			items[i].label = labels[i];
 			items[i].on_disk = on_disk[i];
-			items[i].selected = on_disk[i] ? 0 : 1;
+			items[i].selected =
+				(on_disk[i] || dup || !media_urls[i]) ? 0 : 1;
 		}
 		/* Header name: a forced config name, else the /play/ slug with its
 		 * trailing ".<id>" dropped (e.g. dr-stone-4-part-3-ita). */
@@ -1271,7 +1563,10 @@ run_series(conf_t *conf, const char *page_url, const char *extract_name,
 	for (size_t i = 0; i < nepisodes && run; i++) {
 		if (!sel[i])
 			continue;
-		if (on_disk[i]) {	/* already present: skip, never re-download */
+		/* Skip if already present, including a file written earlier in this
+		 * run (placeholder episodes share one file). Re-check at download time. */
+		if (on_disk[i] ||
+		    (outpaths[i][0] && access(outpaths[i], F_OK) == 0)) {
 			printf(_("\n=== episode %zu/%zu: already on disk, skipping (%s) ===\n"),
 			       i + 1, nepisodes, outpaths[i]);
 			skipped++;
@@ -1689,7 +1984,9 @@ print_help(void)
 		 "--timeout=x\t\t-T x\tSet I/O and connection timeout\n"
 		 "--extract=name\t\t\tForce a named extractor config\n"
 		 "--extract-list\t\t\tList discovered extractor configs\n"
-		 "--extract-scan=url\t\tScan a page and save an active config (-o FILE to a path, -o - to stdout)\n"
+		 "--extract-scan=url\t\tScan a page, print the config, and suggest --save-config (-o FILE writes to a path)\n"
+		 "--extract-scan-depth=N\t\tHops to follow for watch/play/embed pages (default 2, max 3)\n"
+		 "--save-config=id\t\tSave a previously scanned pending config (its id) active\n"
 		 "--yes\t\t\t\tNon-interactive: auto-pick the top candidate\n"
 		 "--all\t\t\t\tSeries: download every episode (no prompt)\n"
 		 "--episodes=spec\t\t\tSeries: pick episodes, e.g. 1,3-5,8 (1-based)\n"

@@ -57,6 +57,15 @@
 #define SCAN_MAX_CANDIDATES	256
 #define SCAN_MAX_IFRAME_DEPTH	1	/* follow same-origin iframes one level */
 
+/* Recursion caps for the multi-hop "watch/play/embed" discovery (#scan-recur).
+ * They bound the crawl so a hostile or looping site can't fan out without end. */
+#define SCAN_MAX_FOLLOW    5   /* candidate links followed per page during recursion */
+#define SCAN_MAX_CHAIN     4   /* pages in a discovered chain (landing..media): SCAN_MAX_DEPTH+1 */
+#define SCAN_DEFAULT_DEPTH 2   /* default --extract-scan-depth */
+#define SCAN_MAX_DEPTH     3   /* hard cap on --extract-scan-depth */
+#define SCAN_MAX_FETCHES   24  /* hard cap on total page fetches per scan (loop/DoS guard) */
+#define SCAN_SERIES_MIN    3   /* >= this many episode links on a page => series */
+
 /* What the media URL points at. */
 typedef enum {
 	SCAN_KIND_FILE = 0,	/* direct .mp4/.webm/... */
@@ -69,6 +78,13 @@ typedef enum {
 	SCAN_CTX_PLAYER,	/* a <video>/<source>/og:video/player JSON hit */
 	SCAN_CTX_AD,		/* inside an ad container/iframe or ad host */
 } scan_ctx_t;
+
+/* One capture step of a multi-hop chain: a reusable ERE (group 1) applied to a
+ * fetched page's body, plus the concrete value it captured at scan time (comment only). */
+typedef struct {
+	char *ere;	/* reusable capturing ERE (owned) */
+	char *sample;	/* concrete captured value for this scan (owned, may be NULL) */
+} scan_step_t;
 
 /* One scored media candidate. */
 typedef struct {
@@ -84,6 +100,11 @@ typedef struct {
 	int count;		/* how many times this URL appeared on the page */
 	int ad_host;		/* 1 if host is on the ad blocklist */
 	double score;		/* computed rank (higher is better) */
+	int depth;		/* hops from landing page (0 = direct hit) */
+	scan_step_t chain[SCAN_MAX_CHAIN];
+	size_t nchain;		/* capture steps; last captures media, earlier capture links. 0 = direct. */
+	char *param_token;	/* e.g. "file" when page0 has file=NAME.mp4 and media is at base/NAME.mp4 */
+	char *media_base;	/* e.g. "https://cdn/videos/" — prefix before the param value in the media URL */
 } scan_candidate_t;
 
 /* A scan result: the page URL and the ranked candidate list (best first). */
@@ -91,6 +112,9 @@ typedef struct {
 	char *page_url;		/* the scanned page URL (owned) */
 	scan_candidate_t cands[SCAN_MAX_CANDIDATES];
 	size_t ncands;
+	int is_series;		/* landing page looks like an episode index */
+	char *list_ere;		/* reusable ERE capturing episode hrefs for `list` (owned), or NULL */
+	char *series_path;	/* a stable path token for the match line, e.g. "/play/" (owned), or NULL */
 } scan_result_t;
 
 /* Probe a direct file URL for its size. Store the byte length in *out_size and
@@ -103,12 +127,19 @@ typedef int (*scan_probe_fn)(const char *url, long long *out_size,
  * `fetch`, parses HLS candidate durations via `fetch`, and probes direct-file
  * sizes via `probe` (may be NULL). Both callbacks receive `userdata`.
  *
+ * When the landing page yields no direct media and `max_depth >= 1`, the
+ * scanner follows internal watch/play/embed links up to `max_depth` hops and
+ * re-scans each page, recording any media reached at depth>0 with the capture
+ * chain that leads to it (so a multi-step config can be generated). It also
+ * detects series index pages. `max_depth == 0` disables recursion.
+ *
  * On success returns a malloc'd scan_result_t (free with scan_result_free) with
  * a scored, ranked candidate list and *err left NULL. On failure returns NULL
  * and, if err is non-NULL, sets *err to a malloc'd message the caller frees.
  * A page that yields no candidates is a success with ncands == 0. */
 scan_result_t *scan_page(const char *page_url, extractor_fetch_fn fetch,
-			 scan_probe_fn probe, void *userdata, char **err);
+			 scan_probe_fn probe, int max_depth,
+			 void *userdata, char **err);
 
 void scan_result_free(scan_result_t *r);
 
