@@ -99,6 +99,7 @@ int run = 1;
 #define EPISODES_OPT	264
 #define EXTRACT_SCAN_DEPTH_OPT	265
 #define SAVE_CONFIG_OPT	266
+#define SCAN_EXT_OPT	267
 
 #ifdef NOGETOPTLONG
 #define getopt_long(a, b, c, d, e) getopt(a, b, c)
@@ -134,6 +135,7 @@ static struct option flux_options[] = {
 	{"episodes",        1,      NULL, EPISODES_OPT},
 	{"extract-scan-depth", 1,   NULL, EXTRACT_SCAN_DEPTH_OPT},
 	{"save-config",     1,      NULL, SAVE_CONFIG_OPT},
+	{"scan-ext",        1,      NULL, SCAN_EXT_OPT},
 	{NULL,              0,      NULL, 0}
 };
 #endif
@@ -257,6 +259,100 @@ scan_pending_dir(char *dst, size_t len)
 	return 1;
 }
 
+/* Parse a comma-separated --scan-ext list into a malloc'd array of malloc'd
+ * lowercased tokens. Strips spaces and a leading '.', lowercases, dedups,
+ * rejects empty tokens, and caps at SCAN_EXT_MAX entries. On success stores the
+ * array in *out (caller frees each entry and the array) and the count in *nout,
+ * returns 0. On a malformed/empty list returns -1 with *out NULL / *nout 0. */
+#define SCAN_EXT_MAX	64
+static int
+parse_scan_ext(const char *spec, char ***out, size_t *nout)
+{
+	*out = NULL;
+	*nout = 0;
+	if (!spec || !*spec)
+		return -1;
+
+	/* A trailing comma means an empty final token. Catch it before any
+	 * allocations so the goto-bad path doesn't skip initialisers. See #17. */
+	if (spec[strlen(spec) - 1] == ',')
+		return -1;
+
+	char **exts = calloc(SCAN_EXT_MAX, sizeof(*exts));
+	if (!exts)
+		return -1;
+	size_t n = 0;
+
+	const char *p = spec;
+	while (*p) {
+		/* One token = up to the next comma. */
+		const char *comma = strchr(p, ',');
+		const char *end = comma ? comma : p + strlen(p);
+
+		/* Trim surrounding whitespace. */
+		const char *ts = p;
+		while (ts < end && isspace((unsigned char)*ts))
+			ts++;
+		const char *te = end;
+		while (te > ts && isspace((unsigned char)te[-1]))
+			te--;
+		/* Strip a single leading '.' (".iso" -> "iso"). */
+		if (ts < te && *ts == '.')
+			ts++;
+
+		size_t len = (size_t)(te - ts);
+		/* Empty token: covers leading comma, internal ",,", AND trailing
+		 * comma (comma != NULL but no chars after trimming). Reject all. */
+		if (len == 0)
+			goto bad;
+		if (n >= SCAN_EXT_MAX)
+			goto bad;	/* too many entries */
+
+		/* Real extensions are purely alphanumeric (iso, mkv, flac, 7z,
+		 * mp4, ...).  Reject anything else so ERE metacharacters can never
+		 * reach build_ext_alternation or the series ext_ere builder. */
+		for (size_t i = 0; i < len; i++)
+			if (!isalnum((unsigned char)ts[i]))
+				goto bad;
+
+		char *tok = malloc(len + 1);
+		if (!tok)
+			goto bad;
+		for (size_t i = 0; i < len; i++)
+			tok[i] = (char)tolower((unsigned char)ts[i]);
+		tok[len] = '\0';
+
+		/* Dedup (case-insensitive already, since lowercased). */
+		int dup = 0;
+		for (size_t i = 0; i < n; i++)
+			if (strcmp(exts[i], tok) == 0) {
+				dup = 1;
+				break;
+			}
+		if (dup)
+			free(tok);
+		else
+			exts[n++] = tok;
+
+		if (!comma)
+			break;
+		p = comma + 1;
+	}
+
+	if (n == 0)
+		goto bad;
+
+	*out = exts;
+	*nout = n;
+	return 0;
+
+ bad:
+	for (size_t i = 0; i < n; i++)
+		free(exts[i]);
+	free(exts);
+	return -1;
+}
+
 /* Run --extract-scan: scan `page_url`, optionally disambiguate via the TUI, and
  * emit a generated config. Output destination:
  *   - no -o (out_file NULL/empty) or '-o -': PRINT the config to stdout, stash
@@ -268,11 +364,13 @@ scan_pending_dir(char *dst, size_t len)
  * success, 1 on any error (matching the caller's exit-code convention). */
 static int
 run_extract_scan(conf_t *conf, const char *page_url, const char *out_file,
-		 int max_depth, int auto_yes)
+		 int max_depth, int auto_yes,
+		 const char *const *exts, size_t nexts)
 {
 	char *err = NULL;
 	scan_result_t *r = scan_page(page_url, extract_http_fetch,
-				     extract_size_probe, max_depth, conf, &err);
+				     extract_size_probe, max_depth, exts, nexts,
+				     conf, &err);
 	if (!r) {
 		fprintf(stderr, _("flux: scan failed: %s\n"),
 			err ? err : "unknown error");
@@ -280,27 +378,36 @@ run_extract_scan(conf_t *conf, const char *page_url, const char *out_file,
 		return 1;
 	}
 
-	int chosen = -1;	/* -1 -> emit the top-ranked candidate */
+	/* Selected candidate indices (NULL = no filtering: emit the top pick). */
+	size_t *sel = NULL;
+	size_t nsel = 0;
 
-	/* Ambiguous (>1 candidate) and interactive without --yes: ask the user.
-	 * The TUI itself degrades to a numbered prompt on a non-TTY. With --yes
-	 * or a single candidate we keep the scorer's top pick. */
+	/* Ambiguous (>1 candidate) and interactive without --yes: multi-select
+	 * which files go into the config. The TUI degrades to a numbered prompt
+	 * on a non-TTY. With --yes or a single candidate we include everything,
+	 * preserving today's non-interactive behavior. */
 	if (!auto_yes && r->ncands > 1) {
 		tui_item_t *items = calloc(r->ncands, sizeof(*items));
 		char (*details)[256] = calloc(r->ncands, sizeof(*details));
-		if (!items || !details) {
+		unsigned char *preselect = malloc(r->ncands);
+		if (!items || !details || !preselect) {
 			free(items);
 			free(details);
+			free(preselect);
 			scan_result_free(r);
 			fprintf(stderr, _("flux: out of memory\n"));
 			return 1;
 		}
 		for (size_t i = 0; i < r->ncands; i++) {
 			const scan_candidate_t *c = &r->cands[i];
+			/* Label = basename of the URL (fall back to full URL). */
+			const char *slash = strrchr(c->url, '/');
+			const char *base = (slash && slash[1]) ? slash + 1 : c->url;
 			int o = 0;
 			o += snprintf(details[i] + o, sizeof(details[i]) - o,
 				      "%s score=%.0f",
-				      c->kind == SCAN_KIND_HLS ? "hls" : "file",
+				      c->kind == SCAN_KIND_HLS    ? "hls" :
+				      c->kind == SCAN_KIND_GDRIVE ? "gdrive" : "file",
 				      c->score);
 			if (c->duration > 0 && o >= 0 &&
 			    (size_t)o < sizeof(details[i]))
@@ -319,23 +426,34 @@ run_extract_scan(conf_t *conf, const char *page_url, const char *out_file,
 			if (c->ad_host && o >= 0 && (size_t)o < sizeof(details[i]))
 				snprintf(details[i] + o, sizeof(details[i]) - o,
 					 " [ad]");
-			items[i].label = c->url;
+			items[i].label = base;
 			items[i].detail = details[i];
+			preselect[i] = 1;	/* default: all selected */
 		}
-		chosen = tui_select_one(_("Select the media stream to extract:"),
-					items, r->ncands);
+		int got = tui_select_many(
+			_("Select the files to include in the config:"),
+			items, r->ncands, preselect, &sel);
 		free(items);
 		free(details);
-		if (chosen < 0) {	/* user cancelled */
+		free(preselect);
+		if (got == -1) {	/* user cancelled */
 			scan_result_free(r);
 			fprintf(stderr, _("flux: scan cancelled.\n"));
 			return 1;
 		}
+		if (got == -2) {	/* allocation failure in the TUI */
+			scan_result_free(r);
+			fprintf(stderr, _("flux: out of memory\n"));
+			return 1;
+		}
+		if (got == 0) {		/* nothing selected: nothing to emit */
+			free(sel);
+			scan_result_free(r);
+			fprintf(stderr, _("flux: no files selected.\n"));
+			return 1;
+		}
+		nsel = (size_t)got;
 	}
-
-	/* Non-TTY + ambiguous + no --yes: scan_page still ran, but we must not
-	 * silently guess. tui_select_one's fallback already handled the prompt
-	 * above; if it returned a valid index we proceed. */
 
 	/* '-o FILE' (not '-') writes the config to FILE explicitly; anything else
 	 * (no -o, or '-o -') prints to stdout and stashes a pending copy. */
@@ -347,12 +465,15 @@ run_extract_scan(conf_t *conf, const char *page_url, const char *out_file,
 		if (!out) {
 			fprintf(stderr, _("flux: cannot write config to %s: %s\n"),
 				out_file, strerror(errno));
+			free(sel);
 			scan_result_free(r);
 			return 1;
 		}
-		int er = scan_emit_config(r, chosen, out);
+		int er = sel ? scan_emit_config_selection(r, sel, nsel, out)
+			     : scan_emit_config(r, -1, out);
 		if (fclose(out) != 0)
 			er = -1;
+		free(sel);
 		scan_result_free(r);
 		if (er != 0) {
 			fprintf(stderr,
@@ -372,11 +493,15 @@ run_extract_scan(conf_t *conf, const char *page_url, const char *out_file,
 	size_t clen = 0;
 	FILE *mp = open_memstream(&cfg, &clen);
 	if (!mp) {
+		free(sel);
 		scan_result_free(r);
 		fprintf(stderr, _("flux: out of memory\n"));
 		return 1;
 	}
-	int er = scan_emit_config(r, chosen, mp);
+	int er = sel ? scan_emit_config_selection(r, sel, nsel, mp)
+		     : scan_emit_config(r, -1, mp);
+	free(sel);
+	sel = NULL;
 	if (fclose(mp) != 0)
 		er = -1;
 	if (er != 0) {
@@ -607,6 +732,7 @@ main(int argc, char *argv[])
 	const char *episodes_spec = NULL;	/* --episodes 1,3-5,8 */
 	int scan_depth = SCAN_DEFAULT_DEPTH;	/* --extract-scan-depth (0..MAX) */
 	const char *save_config_id = NULL;	/* --save-config <id> */
+	const char *scan_ext_spec = NULL;	/* --scan-ext=iso,zip,... */
 
 	fn[0] = 0;
 
@@ -765,6 +891,9 @@ main(int argc, char *argv[])
 		case SAVE_CONFIG_OPT:
 			save_config_id = optarg;
 			break;
+		case SCAN_EXT_OPT:
+			scan_ext_spec = optarg;
+			break;
 		case QUALITY_OPT:
 			hls_quality = optarg;
 			break;
@@ -810,11 +939,31 @@ main(int argc, char *argv[])
 		goto free_conf;
 	}
 
+	/* --scan-ext only applies to --extract-scan; reject it otherwise. */
+	if (scan_ext_spec && !scan_url) {
+		fprintf(stderr,
+			_("flux: --scan-ext requires --extract-scan.\n"));
+		goto free_conf;
+	}
+
 	/* --extract-scan carries its own URL and writes a config (to -o or
 	 * stdout) instead of downloading; handle it before the positional-URL
 	 * dispatch and exit. */
 	if (scan_url) {
-		ret = run_extract_scan(conf, scan_url, fn, scan_depth, auto_yes);
+		char **scan_exts = NULL;
+		size_t nscan_exts = 0;
+		if (scan_ext_spec &&
+		    parse_scan_ext(scan_ext_spec, &scan_exts, &nscan_exts) != 0) {
+			fprintf(stderr,
+				_("flux: invalid --scan-ext list '%s'.\n"),
+				scan_ext_spec);
+			goto free_conf;
+		}
+		ret = run_extract_scan(conf, scan_url, fn, scan_depth, auto_yes,
+				       (const char *const *)scan_exts, nscan_exts);
+		for (size_t i = 0; i < nscan_exts; i++)
+			free(scan_exts[i]);
+		free(scan_exts);
 		goto free_conf;
 	}
 
@@ -2108,6 +2257,7 @@ print_help(void)
 		 "--extract-list\t\t\tList discovered extractor configs\n"
 		 "--extract-scan=url\t\tScan a page, print the config, and suggest --save-config (-o FILE writes to a path)\n"
 		 "--extract-scan-depth=N\t\tHops to follow for watch/play/embed pages (default 2, max 3)\n"
+		 "--scan-ext=list\t\t\t--extract-scan: find these extensions only, any type (default: video and audio)\n"
 		 "--save-config=id\t\tSave a previously scanned pending config (its id) active\n"
 		 "--yes\t\t\t\tNon-interactive: auto-pick the top candidate\n"
 		 "--all\t\t\t\tSeries: download every episode (no prompt)\n"

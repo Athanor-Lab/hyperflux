@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "scan.h"
 
@@ -122,7 +123,8 @@ test_direct_source(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(a) direct-source page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -177,7 +179,8 @@ test_hls_in_json(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(b) HLS-in-JSON page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -240,7 +243,8 @@ test_ad_vs_content(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(c) ad-vs-content page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -296,7 +300,8 @@ test_skeleton_when_no_media(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(d) animeworld-like page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -340,7 +345,8 @@ test_one_hop(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(e) one-hop page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -416,7 +422,8 @@ test_two_hops(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(f) two-hop page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -493,7 +500,8 @@ test_series(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(g) series page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -575,7 +583,8 @@ test_series_no_media(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(g2) series-no-media page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -621,7 +630,8 @@ test_generic_link_follow(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(h) generic-link page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -702,7 +712,8 @@ test_structural_series(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(i) structural series page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -804,7 +815,8 @@ test_multi_series_containment(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(j) multi-series page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -893,7 +905,8 @@ test_multi_series_absolute(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(l) absolute-href multi-series scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -957,7 +970,8 @@ test_ad_trap(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(k) ad-trap page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -1029,7 +1043,8 @@ test_kissanime_shape(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(m) kissanime page scans");
 	if (!r) { printf("  err: %s\n", err ? err : "(none)"); free(err); return; }
 
@@ -1161,7 +1176,8 @@ test_filename_as_param(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(n) filename-as-param page scans");
 	if (!r) {
 		printf("  err: %s\n", err ? err : "(none)");
@@ -1269,7 +1285,8 @@ test_animeunity_json_attr(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(o) AnimeUnity-shaped page scans");
 	if (!r) {
 		printf("  err: %s\n", err ? err : "(none)");
@@ -1375,7 +1392,8 @@ test_gdrive_series(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(p) GDrive series page scans");
 	if (!r) {
 		printf("  err: %s\n", err ? err : "(none)");
@@ -1470,7 +1488,8 @@ test_gdrive_single(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(p-single) GDrive single page scans");
 	if (!r) {
 		printf("  err: %s\n", err ? err : "(none)");
@@ -1528,7 +1547,8 @@ test_episode_number_conservative(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages_kiss[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site_kiss, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site_kiss, &err);
 	CHECK(r != NULL, "(ep-num) kissanime fixture scans");
 	CHECK(r && r->is_series, "(ep-num) kissanime is series");
 	free(err);
@@ -1555,7 +1575,8 @@ test_episode_number_conservative(void)
 
 	char *err2 = NULL;
 	scan_result_t *r2 = scan_page(pages_aw[0].url, fake_fetch, fake_probe,
-				      SCAN_DEFAULT_DEPTH, &site_aw, &err2);
+				      SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site_aw, &err2);
 	CHECK(r2 != NULL, "(ep-num) AnimeWorld fixture scans");
 	/* AnimeWorld's opaque epids (JyaFP, sWi1hA) don't match the episode
 	 * URL patterns, so detect_series falls back to generic detection.
@@ -1583,7 +1604,8 @@ test_skeleton_shape(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     0 /* no recursion */, &site, &err);
+				     0 /* no recursion */, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(skel) skeleton page scans");
 	free(err);
 	if (!r) return;
@@ -1639,7 +1661,8 @@ test_episode_ordering(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(ep-ord) ordering fixture scans");
 	free(err);
 	if (!r) return;
@@ -1708,7 +1731,8 @@ test_catchall_signed_url(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     0, &site, &err);
+				     0, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(signed-url) page scans");
 	free(err);
 	if (!r) return;
@@ -1733,7 +1757,8 @@ test_catchall_signed_url(void)
 
 	char *err2 = NULL;
 	scan_result_t *r2 = scan_page(pages2[0].url, fake_fetch, fake_probe,
-				      0, &site2, &err2);
+				      0, NULL, 0,
+				     &site2, &err2);
 	CHECK(r2 != NULL, "(signed-url) animeunity page scans");
 	free(err2);
 	if (!r2) return;
@@ -1765,7 +1790,8 @@ test_gdrive_filed_series(void)
 
 	char *err = NULL;
 	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
-				     SCAN_DEFAULT_DEPTH, &site, &err);
+				     SCAN_DEFAULT_DEPTH, NULL, 0,
+				     &site, &err);
 	CHECK(r != NULL, "(gdfiled) file/d/ series page scans");
 	free(err);
 	if (!r) return;
@@ -1907,6 +1933,550 @@ test_ad_host_blocklist(void)
 	CHECK(!scan_is_ad_host(""), "empty host safe");
 }
 
+/* ---- default extension set now finds audio ----------------------------- */
+
+static void
+test_default_finds_audio(void)
+{
+	/* A page with an <a href> mp3 and a <source> flac. The default scan
+	 * (exts == NULL) must recognise both as audio file candidates. */
+	static const struct kv pages[] = {
+		{ "https://music.test/album/songs",
+		  "<html><body>"
+		  "<a href=\"https://cdn.music.test/track/song.mp3\">Song</a>"
+		  "<audio><source src=\"https://cdn.music.test/track/hifi.flac\"></audio>"
+		  "</body></html>" },
+	};
+	struct fake_site site = { pages, 1, NULL, 0 };
+
+	char *err = NULL;
+	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
+				     0, NULL, 0, &site, &err);
+	CHECK(r != NULL, "(audio) default audio page scans");
+	free(err);
+	if (!r) return;
+
+	int found_mp3 = 0, found_flac = 0;
+	for (size_t i = 0; i < r->ncands; i++) {
+		if (strcmp(r->cands[i].url,
+			   "https://cdn.music.test/track/song.mp3") == 0)
+			found_mp3 = 1;
+		if (strcmp(r->cands[i].url,
+			   "https://cdn.music.test/track/hifi.flac") == 0)
+			found_flac = 1;
+	}
+	CHECK(found_mp3, "(audio) mp3 href recognised by default set");
+	CHECK(found_flac, "(audio) flac <source> recognised by default set");
+	for (size_t i = 0; i < r->ncands; i++)
+		CHECK(r->cands[i].kind == SCAN_KIND_FILE,
+		      "(audio) audio candidates classified as file");
+	scan_result_free(r);
+}
+
+/* ---- --scan-ext custom: directory listing, any file type --------------- */
+
+static void
+test_scan_ext_directory_listing(void)
+{
+	/* Apache/nginx autoindex: relative <a href> to mixed-distro ISOs that
+	 * share NO numeric template (ubuntu-#.#.iso vs debian-#.iso).
+	 * URL has a :port and an index.html filename — the exact live failure
+	 * shape. The extension-list series path must fire and the generated
+	 * match must satisfy extractor_matches on a port-bearing landing URL. */
+	static const struct kv pages[] = {
+		{ "http://mirror.test:8080/isos/index.html",
+		  "<html><head><title>Index of /isos</title></head><body>"
+		  "<h1>Index of /isos</h1><pre>"
+		  "<a href=\"ubuntu-24.04.iso\">ubuntu-24.04.iso</a>\n"
+		  "<a href=\"ubuntu-22.04.iso\">ubuntu-22.04.iso</a>\n"
+		  "<a href=\"debian-12.iso\">debian-12.iso</a>\n"
+		  "<a href=\"readme.txt\">readme.txt</a>\n"
+		  "<a href=\"pic.png\">pic.png</a>\n"
+		  "</pre></body></html>" },
+	};
+	struct fake_site site = { pages, 1, NULL, 0 };
+
+	/* (1) exts = {"iso"}: three ISOs, no shared numeric template, :port URL.
+	 * Must produce a list config whose match fires on the port-bearing URL. */
+	const char *iso_only[] = { "iso" };
+	char *err = NULL;
+	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
+				     0, iso_only, 1, &site, &err);
+	CHECK(r != NULL, "(ext-iso) directory listing scans with iso filter");
+	free(err);
+	if (!r) return;
+
+	CHECK(r->ncands == 3, "(ext-iso) exactly 3 .iso candidates");
+	for (size_t i = 0; i < r->ncands; i++) {
+		CHECK(strstr(r->cands[i].url, ".iso") != NULL,
+		      "(ext-iso) every candidate is a .iso file");
+		CHECK(r->cands[i].kind == SCAN_KIND_FILE,
+		      "(ext-iso) iso candidate classified as file");
+	}
+	CHECK(r->is_series, "(ext-iso) >=3 iso files => extension-list series");
+	CHECK(r->list_ere != NULL, "(ext-iso) list_ere set");
+
+	char *cfg = NULL;
+	CHECK(emit_to_string(r, -1, &cfg) == 0 && cfg, "(ext-iso) config emits");
+	if (cfg) {
+		CHECK(strstr(cfg, "list   eps") != NULL, "(ext-iso) has list line");
+		CHECK(strstr(cfg, "output {url}") != NULL,
+		      "(ext-iso) has output {url}");
+
+		char *perr = NULL;
+		extractor_t *ex = extractor_parse(cfg, "(gen-ext-iso)", &perr);
+		CHECK(ex != NULL, "(ext-iso) generated config parses");
+		free(perr);
+		if (ex) {
+			/* Match must fire on the port-bearing landing URL (the live
+			 * failure: match was "127\.0\.0\.1/index\.html" without port
+			 * token, so :PORT broke the match). See #17. */
+			CHECK(extractor_matches(ex, pages[0].url) == 1,
+			      "(ext-iso) extractor matches port-bearing listing URL");
+			char **urls = NULL;
+			size_t n = 0;
+			char *lerr = NULL;
+			int lr = extractor_list_episodes(ex, pages[0].url,
+							 fake_fetch, &site,
+							 &urls, &n, &lerr);
+			CHECK(lr == 0, "(ext-iso) list_episodes succeeds");
+			if (lr != 0)
+				printf("  list err: %s\n", lerr ? lerr : "(none)");
+			free(lerr);
+			CHECK(n == 3, "(ext-iso) exactly 3 iso URLs listed");
+			int got24 = 0, got22 = 0, gotdeb = 0;
+			for (size_t i = 0; i < n; i++) {
+				if (!urls[i]) continue;
+				/* Resolved absolute against the listing URL. */
+				CHECK(strncmp(urls[i],
+					      "http://mirror.test:8080/isos/", 29) == 0,
+				      "(ext-iso) listed URL resolved absolute with port");
+				if (strstr(urls[i], "ubuntu-24.04.iso")) got24 = 1;
+				if (strstr(urls[i], "ubuntu-22.04.iso")) got22 = 1;
+				if (strstr(urls[i], "debian-12.iso"))    gotdeb = 1;
+			}
+			CHECK(got24 && got22 && gotdeb,
+			      "(ext-iso) all three iso files listed");
+			extractor_free_urls(urls, n);
+			extractor_free(ex);
+		}
+		free(cfg);
+	}
+	scan_result_free(r);
+
+	/* (2) exts = {"iso","txt"}: the iso files AND readme.txt (4 total). */
+	const char *iso_txt[] = { "iso", "txt" };
+	char *err2 = NULL;
+	scan_result_t *r2 = scan_page(pages[0].url, fake_fetch, fake_probe,
+				      0, iso_txt, 2, &site, &err2);
+	CHECK(r2 != NULL, "(ext-iso-txt) scans with iso,txt filter");
+	free(err2);
+	if (r2) {
+		CHECK(r2->ncands == 4, "(ext-iso-txt) 3 iso + 1 txt = 4 candidates");
+		int found_txt = 0, found_png = 0;
+		for (size_t i = 0; i < r2->ncands; i++) {
+			if (strstr(r2->cands[i].url, "readme.txt")) found_txt = 1;
+			if (strstr(r2->cands[i].url, "pic.png")) found_png = 1;
+		}
+		CHECK(found_txt, "(ext-iso-txt) readme.txt included");
+		CHECK(!found_png, "(ext-iso-txt) pic.png NOT included");
+		scan_result_free(r2);
+	}
+
+	/* (3) default media scan (exts == NULL): none of these are media. */
+	char *err3 = NULL;
+	scan_result_t *r3 = scan_page(pages[0].url, fake_fetch, fake_probe,
+				      0, NULL, 0, &site, &err3);
+	CHECK(r3 != NULL, "(ext-default) media-default scan of listing scans");
+	free(err3);
+	if (r3) {
+		CHECK(r3->ncands == 0,
+		      "(ext-default) no media candidates on a non-media listing");
+		scan_result_free(r3);
+	}
+}
+
+/* ---- parse_scan_ext validation tests ---------------------------------- */
+
+/* Local copy of parse_scan_ext so we can unit-test it without linking text.c.
+ * Must stay in sync with the production copy in text.c. See #17. */
+#define TEST_SCAN_EXT_MAX 64
+static int
+test_parse_scan_ext(const char *spec, char ***out, size_t *nout)
+{
+	*out = NULL;
+	*nout = 0;
+	if (!spec || !*spec)
+		return -1;
+
+	if (spec[strlen(spec) - 1] == ',')
+		return -1;
+
+	char **exts = calloc(TEST_SCAN_EXT_MAX, sizeof(*exts));
+	if (!exts)
+		return -1;
+	size_t n = 0;
+
+	const char *p = spec;
+	while (*p) {
+		const char *comma = strchr(p, ',');
+		const char *end = comma ? comma : p + strlen(p);
+
+		const char *ts = p;
+		while (ts < end && isspace((unsigned char)*ts))
+			ts++;
+		const char *te = end;
+		while (te > ts && isspace((unsigned char)te[-1]))
+			te--;
+		if (ts < te && *ts == '.')
+			ts++;
+
+		size_t len = (size_t)(te - ts);
+		if (len == 0)
+			goto bad;
+		if (n >= TEST_SCAN_EXT_MAX)
+			goto bad;
+
+		for (size_t i = 0; i < len; i++)
+			if (!isalnum((unsigned char)ts[i]))
+				goto bad;
+
+		char *tok = malloc(len + 1);
+		if (!tok)
+			goto bad;
+		for (size_t i = 0; i < len; i++)
+			tok[i] = (char)tolower((unsigned char)ts[i]);
+		tok[len] = '\0';
+
+		int dup = 0;
+		for (size_t i = 0; i < n; i++)
+			if (strcmp(exts[i], tok) == 0) { dup = 1; break; }
+		if (dup)
+			free(tok);
+		else
+			exts[n++] = tok;
+
+		if (!comma)
+			break;
+		p = comma + 1;
+	}
+
+	if (n == 0)
+		goto bad;
+
+	*out = exts;
+	*nout = n;
+	return 0;
+
+ bad:
+	for (size_t i = 0; i < n; i++)
+		free(exts[i]);
+	free(exts);
+	return -1;
+}
+
+static void
+test_parse_scan_ext_validation(void)
+{
+	/* Valid inputs. */
+	char **exts = NULL;
+	size_t n = 0;
+	CHECK(test_parse_scan_ext("iso", &exts, &n) == 0,
+	      "(pse) single token accepted");
+	CHECK(n == 1 && exts && strcmp(exts[0], "iso") == 0,
+	      "(pse) single token value");
+	{ for (size_t i = 0; i < n; i++) free(exts[i]); free(exts); exts = NULL; n = 0; }
+
+	CHECK(test_parse_scan_ext("iso,mp4,7z", &exts, &n) == 0,
+	      "(pse) iso,mp4,7z accepted");
+	CHECK(n == 3, "(pse) iso,mp4,7z -> 3 tokens");
+	{ for (size_t i = 0; i < n; i++) free(exts[i]); free(exts); exts = NULL; n = 0; }
+
+	/* Leading dot stripped. */
+	CHECK(test_parse_scan_ext(".iso", &exts, &n) == 0,
+	      "(pse) .iso leading dot stripped");
+	CHECK(n == 1 && exts && strcmp(exts[0], "iso") == 0,
+	      "(pse) .iso -> iso");
+	{ for (size_t i = 0; i < n; i++) free(exts[i]); free(exts); exts = NULL; n = 0; }
+
+	/* Dedup. */
+	CHECK(test_parse_scan_ext("iso,iso", &exts, &n) == 0,
+	      "(pse) dedup accepted");
+	CHECK(n == 1, "(pse) dedup -> 1 token");
+	{ for (size_t i = 0; i < n; i++) free(exts[i]); free(exts); exts = NULL; n = 0; }
+
+	/* FIX 3: ERE metacharacter in token rejected. */
+	CHECK(test_parse_scan_ext("iso,a{2}b", &exts, &n) != 0,
+	      "(pse) token with {} rejected (FIX3)");
+	CHECK(exts == NULL && n == 0, "(pse) {} rejection leaves output NULL");
+
+	CHECK(test_parse_scan_ext("mp4+webm", &exts, &n) != 0,
+	      "(pse) token with + rejected");
+
+	CHECK(test_parse_scan_ext("a.b", &exts, &n) != 0,
+	      "(pse) token with internal dot rejected");
+
+	/* FIX 4: trailing comma rejected. */
+	CHECK(test_parse_scan_ext("iso,", &exts, &n) != 0,
+	      "(pse) trailing comma rejected (FIX4)");
+	CHECK(exts == NULL && n == 0, "(pse) trailing-comma rejection leaves output NULL");
+
+	/* Leading comma rejected (was already). */
+	CHECK(test_parse_scan_ext(",iso", &exts, &n) != 0,
+	      "(pse) leading comma rejected");
+
+	/* Double comma rejected. */
+	CHECK(test_parse_scan_ext("iso,,zip", &exts, &n) != 0,
+	      "(pse) double comma rejected");
+
+	/* Empty string rejected. */
+	CHECK(test_parse_scan_ext("", &exts, &n) != 0,
+	      "(pse) empty string rejected");
+}
+
+/* ---- control character injection -> candidate rejected (FIX 2) --------- */
+
+static void
+test_cntrl_char_candidate_rejected(void)
+{
+	/* A page body containing a candidate with an embedded newline in the
+	 * href.  The newline would inject directives into the emitted config.
+	 * add_candidate must reject it silently. See #17. */
+	static const struct kv pages[] = {
+		{ "https://inject.test/page",
+		  "<html><body>"
+		  /* normal candidate */
+		  "<a href=\"safe.mp4\">safe</a>"
+		  /* crafted href with embedded newline: must be rejected */
+		  "<a href=\"bad\noutput /tmp/x\n.mp4\">evil</a>"
+		  "</body></html>" },
+	};
+	struct fake_site site = { pages, 1, NULL, 0 };
+
+	char *err = NULL;
+	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
+				     0, NULL, 0, &site, &err);
+	CHECK(r != NULL, "(cntrl) page scans without error");
+	free(err);
+	if (!r) return;
+
+	/* The crafted href must NOT appear as a candidate. */
+	int found_evil = 0;
+	for (size_t i = 0; i < r->ncands; i++)
+		if (strstr(r->cands[i].url, "output") ||
+		    strstr(r->cands[i].url, "/tmp"))
+			found_evil = 1;
+	CHECK(!found_evil, "(cntrl) candidate with embedded newline rejected");
+	scan_result_free(r);
+}
+
+/* ---- partial selection on relative-href directory listing (FIX 1) ------ */
+
+static void
+test_partial_selection_relative_hrefs(void)
+{
+	/* Directory listing with RELATIVE hrefs and a :port URL — the case that
+	 * broke: the old absolute-URL alternation matched nothing in the body.
+	 * Selecting 2 of 3 isos must roundtrip via extractor_list_episodes to
+	 * EXACTLY those 2, resolved absolute. See #17. */
+	static const struct kv pages[] = {
+		{ "http://mirror.test:9000/dl/index.html",
+		  "<html><body>"
+		  "<a href=\"arch-2024.iso\">arch</a>"
+		  "<a href=\"fedora-40.iso\">fedora</a>"
+		  "<a href=\"opensuse-15.iso\">opensuse</a>"
+		  "<a href=\"readme.txt\">readme</a>"
+		  "</body></html>" },
+	};
+	struct fake_site site = { pages, 1, NULL, 0 };
+
+	const char *iso_only[] = { "iso" };
+	char *err = NULL;
+	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
+				     0, iso_only, 1, &site, &err);
+	CHECK(r != NULL, "(psel) partial-sel page scans");
+	free(err);
+	if (!r) return;
+
+	CHECK(r->ncands == 3, "(psel) 3 iso candidates");
+	if (r->ncands != 3) { scan_result_free(r); return; }
+
+	/* Verify raw_ref is stored (the relative filename, not the absolute URL). */
+	int raw_ok = 1;
+	for (size_t i = 0; i < r->ncands; i++) {
+		if (!r->cands[i].raw_ref ||
+		    strstr(r->cands[i].raw_ref, "://"))
+			raw_ok = 0;	/* raw_ref should be relative, not absolute */
+	}
+	CHECK(raw_ok, "(psel) raw_ref is a relative ref, not an absolute URL");
+
+	/* Select indices 0 and 2, skip index 1. */
+	char url0[256], url2[256];
+	snprintf(url0, sizeof(url0), "%s", r->cands[0].url);
+	snprintf(url2, sizeof(url2), "%s", r->cands[2].url);
+	const char *raw1 = r->cands[1].raw_ref; /* the one we skip */
+
+	size_t sel[2] = { 0, 2 };
+	char *cfg = NULL;
+	size_t cfglen = 0;
+	FILE *fp = open_memstream(&cfg, &cfglen);
+	CHECK(fp != NULL, "(psel) memstream opens");
+	if (!fp) { scan_result_free(r); return; }
+
+	int rc = scan_emit_config_selection(r, sel, 2, fp);
+	fclose(fp);
+	CHECK(rc == 0 && cfg, "(psel) partial selection config emits");
+	if (rc != 0 || !cfg) { free(cfg); scan_result_free(r); return; }
+
+	CHECK(strstr(cfg, "list   eps") != NULL,
+	      "(psel) emits a list directive");
+	CHECK(strstr(cfg, "output {url}") != NULL,
+	      "(psel) emits output {url}");
+	/* The raw ref of the skipped candidate must NOT appear in the config. */
+	CHECK(!raw1 || strstr(cfg, raw1) == NULL,
+	      "(psel) skipped raw ref absent from config");
+
+	char *perr = NULL;
+	extractor_t *ex = extractor_parse(cfg, "(gen-psel)", &perr);
+	CHECK(ex != NULL, "(psel) partial-sel config parses");
+	free(perr);
+	if (ex) {
+		/* Match must fire on the port-bearing landing URL. */
+		CHECK(extractor_matches(ex, pages[0].url) == 1,
+		      "(psel) extractor matches port-bearing listing URL");
+
+		char **urls = NULL;
+		size_t n = 0;
+		char *lerr = NULL;
+		int lr = extractor_list_episodes(ex, pages[0].url,
+						 fake_fetch, &site,
+						 &urls, &n, &lerr);
+		CHECK(lr == 0, "(psel) list_episodes succeeds");
+		if (lr != 0)
+			printf("  psel list err: %s\n", lerr ? lerr : "(none)");
+		free(lerr);
+		CHECK(n == 2, "(psel) exactly 2 iso URLs listed");
+		int got0 = 0, got2 = 0, got1 = 0;
+		for (size_t i = 0; i < n; i++) {
+			if (!urls[i]) continue;
+			/* Each listed URL must be absolute. */
+			CHECK(strncmp(urls[i], "http://mirror.test:9000/dl/", 27) == 0,
+			      "(psel) listed URL resolved absolute with port");
+			if (strcmp(urls[i], url0) == 0) got0 = 1;
+			if (strcmp(urls[i], url2) == 0) got2 = 1;
+			if (strcmp(urls[i], r->cands[1].url) == 0) got1 = 1;
+		}
+		CHECK(got0 && got2, "(psel) both selected URLs present");
+		CHECK(!got1, "(psel) unselected URL absent");
+		extractor_free_urls(urls, n);
+		extractor_free(ex);
+	}
+	free(cfg);
+	scan_result_free(r);
+}
+
+/* ---- explicit selection -> alternation list config --------------------- */
+
+static void
+test_selection_alternation(void)
+{
+	/* A page whose body carries 3 absolute .bin URLs. We select 2 of the 3
+	 * and emit a `list` config that must roundtrip to EXACTLY those two. */
+	static const struct kv pages[] = {
+		{ "https://files.test/drop/page",
+		  "<html><body>"
+		  " https://cdn.files.test/a/one.bin "
+		  " https://cdn.files.test/a/two.bin "
+		  " https://cdn.files.test/a/three.bin "
+		  "</body></html>" },
+	};
+	struct fake_site site = { pages, 1, NULL, 0 };
+
+	const char *bin_only[] = { "bin" };
+	char *err = NULL;
+	scan_result_t *r = scan_page(pages[0].url, fake_fetch, fake_probe,
+				     0, bin_only, 1, &site, &err);
+	CHECK(r != NULL, "(sel) bin page scans");
+	free(err);
+	if (!r) return;
+	CHECK(r->ncands == 3, "(sel) 3 bin candidates found");
+	if (r->ncands != 3) { scan_result_free(r); return; }
+
+	/* Capture the two we will select (indices 0 and 2, skip the middle). */
+	char wa[256], wc[256];
+	snprintf(wa, sizeof(wa), "%s", r->cands[0].url);
+	snprintf(wc, sizeof(wc), "%s", r->cands[2].url);
+
+	size_t sel[2] = { 0, 2 };
+	char *cfg = NULL;
+	size_t len = 0;
+	FILE *fp = open_memstream(&cfg, &len);
+	CHECK(fp != NULL, "(sel) memstream opens");
+	if (fp) {
+		int rc = scan_emit_config_selection(r, sel, 2, fp);
+		fclose(fp);
+		CHECK(rc == 0 && cfg, "(sel) selection config emits");
+		if (rc == 0 && cfg) {
+			CHECK(strstr(cfg, "list   eps") != NULL,
+			      "(sel) emits a list directive");
+			CHECK(strstr(cfg, "output {url}") != NULL,
+			      "(sel) emits output {url}");
+
+			char *perr = NULL;
+			extractor_t *ex = extractor_parse(cfg, "(gen-sel)", &perr);
+			CHECK(ex != NULL, "(sel) selection config parses");
+			free(perr);
+			if (ex) {
+				char **urls = NULL;
+				size_t n = 0;
+				char *lerr = NULL;
+				int lr = extractor_list_episodes(ex, pages[0].url,
+								 fake_fetch, &site,
+								 &urls, &n, &lerr);
+				CHECK(lr == 0, "(sel) list_episodes succeeds");
+				if (lr != 0)
+					printf("  list err: %s\n",
+					       lerr ? lerr : "(none)");
+				free(lerr);
+				CHECK(n == 2, "(sel) exactly 2 selected URLs listed");
+				int got_a = 0, got_c = 0, got_b = 0;
+				for (size_t i = 0; i < n; i++) {
+					if (!urls[i]) continue;
+					if (strcmp(urls[i], wa) == 0) got_a = 1;
+					if (strcmp(urls[i], wc) == 0) got_c = 1;
+					if (strstr(urls[i], "two.bin")) got_b = 1;
+				}
+				CHECK(got_a && got_c,
+				      "(sel) both selected URLs present");
+				CHECK(!got_b,
+				      "(sel) the unselected URL is absent");
+				extractor_free_urls(urls, n);
+				extractor_free(ex);
+			}
+		}
+		free(cfg);
+	}
+
+	/* A single selected file keeps the static single-output form. */
+	size_t one[1] = { 1 };
+	char *cfg2 = NULL;
+	size_t len2 = 0;
+	FILE *fp2 = open_memstream(&cfg2, &len2);
+	if (fp2) {
+		int rc = scan_emit_config_selection(r, one, 1, fp2);
+		fclose(fp2);
+		CHECK(rc == 0 && cfg2, "(sel) single-selection config emits");
+		if (rc == 0 && cfg2) {
+			CHECK(strstr(cfg2, "output https://cdn.files.test/a/two.bin")
+			      != NULL, "(sel) single selection is a static output");
+			CHECK(strstr(cfg2, "list   eps") == NULL,
+			      "(sel) single selection is not a list");
+		}
+		free(cfg2);
+	}
+	scan_result_free(r);
+}
+
 int
 main(void)
 {
@@ -1935,6 +2505,12 @@ main(void)
 	test_skeleton_shape();
 	test_gdrive_normalize();
 	test_ad_host_blocklist();
+	test_default_finds_audio();
+	test_scan_ext_directory_listing();
+	test_selection_alternation();
+	test_parse_scan_ext_validation();
+	test_cntrl_char_candidate_rejected();
+	test_partial_selection_relative_hrefs();
 
 	if (failures == 0)
 		printf("OK: all %d checks passed\n", checks);

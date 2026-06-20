@@ -41,6 +41,11 @@ discovery is content-driven: it follows promising links even without a standard
 `/watch` or `/play` pattern, stays within the series you scan, and ignores ad and
 onclick/popunder traps.
 
+By default the scan looks for video and audio. Pass `--scan-ext=iso,zip,mkv,flac`
+to find any file type instead (disk images, archives, anything), which also works
+on a plain directory listing. With more than one file it opens a multi-select so
+you choose which ones go into the config.
+
 The scan prints the config and stashes a pending copy instead of activating it.
 When you are happy with it, run the `flux --save-config <id>` line it suggests to
 install it active. Use `-o FILE` to write straight to a path instead.
