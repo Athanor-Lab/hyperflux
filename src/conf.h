@@ -78,6 +78,7 @@ typedef struct {
 
 	int add_header_count;
 	char add_header[MAX_ADD_HEADERS][MAX_STRING];
+	int ua_explicit;	/* 1 if the user passed -U/--user-agent explicitly */
 } conf_t;
 
 int conf_loadfile(conf_t *conf, const char *file);

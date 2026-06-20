@@ -389,11 +389,17 @@ run_extract_scan(conf_t *conf, const char *page_url, const char *out_file,
 	fputs(cfg, stdout);
 	fflush(stdout);
 
+	/* Skeleton case (no media found, no series): the config has no active
+	 * `output` line so extractor_parse rejects it. Don't stash it; just
+	 * tell the user they need to complete it by hand. */
+	int is_skeleton = (r->ncands == 0 && !r->is_series);
+
 	char id[160];
 	char pdir[4096];
 	char ppath[MAX_STRING];
 	int stashed = 0;
-	if (scan_pending_id(r, page_url, id, sizeof(id)) == 0 &&
+	if (!is_skeleton &&
+	    scan_pending_id(r, page_url, id, sizeof(id)) == 0 &&
 	    scan_pending_dir(pdir, sizeof(pdir))) {
 		int n = snprintf(ppath, sizeof(ppath), "%s/%s.conf", pdir, id);
 		if (n > 0 && (size_t)n < sizeof(ppath)) {
@@ -410,7 +416,10 @@ run_extract_scan(conf_t *conf, const char *page_url, const char *out_file,
 	scan_result_free(r);
 
 	if (conf->verbose >= 0) {
-		if (stashed)
+		if (is_skeleton)
+			fprintf(stderr,
+				_("flux: The scanner found no media URL (the player may use JS/an API). Complete the config above by hand before saving.\n"));
+		else if (stashed)
 			fprintf(stderr,
 				_("flux: If you want to save this, run: flux --save-config %s\n"),
 				id);
@@ -628,6 +637,7 @@ main(int argc, char *argv[])
 		case 'U':
 			conf_hdr_make(conf->add_header[HDR_USER_AGENT],
 				      "User-Agent", optarg);
+			conf->ua_explicit = 1;
 			break;
 		case 'H':
 			if(!(conf->add_header_count<MAX_ADD_HEADERS)) {
@@ -944,6 +954,15 @@ main(int argc, char *argv[])
 		if (resolved && strcmp(resolved, single) != 0 && conf->verbose > 0)
 			printf(_("Extracted media URL: %s\n"), resolved);
 		const char *src_url = resolved ? resolved : single;
+		/* Rewrite a bare Google Drive link to its direct-download URL. */
+		char *gd_url = gdrive_normalize(src_url);
+		if (gd_url)
+			src_url = gd_url;
+		/* Inject browser UA for Google Drive if the user did not pass -U. */
+		if (!conf->ua_explicit && gd_url)
+			conf_hdr_make(conf->add_header[HDR_USER_AGENT], "User-Agent",
+				"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+				" (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
 
 #ifdef HAVE_SSL
 		/* HLS playlist: hand off to the segment downloader and skip the
@@ -952,6 +971,7 @@ main(int argc, char *argv[])
 			int hr = hls_download(conf, src_url, fn, hls_quality,
 					      hls_mux);
 			free(resolved);
+			free(gd_url);
 			ret = hr == 0 ? 0 : 1;
 			goto cleanup;
 		}
@@ -962,9 +982,11 @@ main(int argc, char *argv[])
 				_("Invalid URL pattern, or too many URLs (max %d).\n"),
 				URL_GLOB_MAX_URLS);
 			free(resolved);
+			free(gd_url);
 			goto cleanup;
 		}
 		free(resolved);
+		free(gd_url);
 
 		/* Refuse to clobber one file with many distinct downloads */
 		if (n > 1 && *fn && !is_directory(fn)
@@ -1037,9 +1059,18 @@ main(int argc, char *argv[])
 			goto cleanup;
 
 		for (int i = 0; i < argc - optind; i++) {
-			strlcpy(search[i].url, argv[optind + i],
+			const char *raw = argv[optind + i];
+			char *norm = gdrive_normalize(raw);
+			strlcpy(search[i].url, norm ? norm : raw,
 				sizeof(search[i].url));
-			// FIXME check url here
+			/* Inject browser UA for GDrive if user didn't pass -U. */
+			if (!conf->ua_explicit && (norm || is_gdrive_url(raw)))
+				conf_hdr_make(conf->add_header[HDR_USER_AGENT],
+					"User-Agent",
+					"Mozilla/5.0 (X11; Linux x86_64)"
+					" AppleWebKit/537.36 (KHTML, like Gecko)"
+					" Chrome/124.0.0.0 Safari/537.36");
+			free(norm);
 		}
 		ret = download_one(conf, search, argc - optind, fn, NULL, 0);
 		free(search);
@@ -1225,10 +1256,24 @@ static int
 download_media_url(conf_t *conf, const char *media_url, const char *out_name,
 		   const char *hls_quality, const char *hls_mux)
 {
+	/* Normalise GDrive share URLs to the download endpoint. See #gdrive. */
+	char *normalized = gdrive_normalize(media_url);
+	if (normalized)
+		media_url = normalized;
+
+	/* Inject browser UA for Google Drive if the user did not pass -U. */
+	if (!conf->ua_explicit && is_gdrive_url(media_url))
+		conf_hdr_make(conf->add_header[HDR_USER_AGENT], "User-Agent",
+			"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+			" (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+
 #ifdef HAVE_SSL
-	if (hls_is_playlist_url(media_url))
-		return hls_download(conf, media_url, out_name, hls_quality,
-				    hls_mux) == 0 ? 0 : 1;
+	if (hls_is_playlist_url(media_url)) {
+		int r = hls_download(conf, media_url, out_name, hls_quality,
+				     hls_mux) == 0 ? 0 : 1;
+		free(normalized);
+		return r;
+	}
 #else
 	(void)hls_quality;
 	(void)hls_mux;
@@ -1236,6 +1281,7 @@ download_media_url(conf_t *conf, const char *media_url, const char *out_name,
 	search_t one;
 	memset(&one, 0, sizeof(one));
 	strlcpy(one.url, media_url, sizeof(one.url));
+	free(normalized);
 	return download_one(conf, &one, 1, out_name, NULL, 0);
 }
 
@@ -1280,9 +1326,10 @@ episode_basename(char *dst, size_t dlen, const char *media_url, size_t num)
 	}
 	dst[o] = '\0';
 
-	/* No usable leaf (URL ends in '/'): fall back to a numbered name. */
-	if (!useful)
-		snprintf(dst, dlen, "episode-%02zu", num);
+	/* No usable leaf, or GDrive download URL whose basename is "download":
+	 * fall back to a numbered name so episodes don't collide. */
+	if (!useful || strcmp(dst, "download") == 0)
+		snprintf(dst, dlen, "episode-%02zu.mp4", num);
 }
 
 /* Build the on-disk output PATH for episode #num given its (already resolved)
@@ -1327,23 +1374,98 @@ episode_outpath(char *dst, size_t dlen, const char *out_name, int out_is_file,
  * honoured for a single selected episode (else it would clobber). Returns 0 if
  * all attempted succeeded, 2 on interrupt, 1 if any failed or on a setup error. */
 
-/* Episode number from a page URL (its last digit run), to order the list 1..N
- * even when the site lists newest first; -1 if the URL carries no number. */
+/* Episode number from a page URL, used to sort episodes 1..N.
+ * Conservative: only returns a number when it is clearly an episode number:
+ *   (a) "episode" (case-insensitive) followed by an optional separator in
+ *       [-_/= ] then a digit run — covers /episode-9/, -episode-7-, _episode_2
+ *   (b) "ep" only when preceded AND followed by a clear delimiter: /ep/N,
+ *       -ep-N, _ep_N, ep=N, &ep=N, ?ep=N — avoids matching inside opaque IDs
+ *   (c) a path segment that is purely numeric: .../9/...
+ * Returns -1 for opaque alphanumeric IDs (e.g. AnimeWorld epids like JyaFP)
+ * so those keep their original list order. See #episode-number-conservative. */
 static long
 episode_number(const char *url)
 {
-	long n = -1;
-	const char *p = url;
-	while (p && *p) {
-		if (isdigit((unsigned char)*p)) {
-			char *end;
-			n = strtol(p, &end, 10);
-			p = end;
-		} else {
+	if (!url)
+		return -1;
+
+	/* (a) "episode" (case-insensitive) + optional single separator + digits. */
+	{
+		const char *p = url;
+		while (*p) {
+			/* Case-insensitive search for "episode". */
+			if ((*p == 'e' || *p == 'E') &&
+			    strncasecmp(p, "episode", 7) == 0) {
+				const char *after = p + 7;
+				/* Skip one optional separator character. */
+				if (*after == '-' || *after == '_' ||
+				    *after == '/' || *after == '=' ||
+				    *after == ' ')
+					after++;
+				if (isdigit((unsigned char)*after)) {
+					char *end;
+					long n = strtol(after, &end, 10);
+					if (end > after)
+						return n;
+				}
+			}
 			p++;
 		}
 	}
-	return n;
+
+	/* (b) "ep" only when clearly delimited on both sides. */
+	static const char *const ep_tokens[] = {
+		"/ep/", "-ep-", "_ep_", "&ep=", "?ep=",
+		NULL
+	};
+	for (size_t ti = 0; ep_tokens[ti]; ti++) {
+		const char *hit = url;
+		size_t tlen = strlen(ep_tokens[ti]);
+		while ((hit = strstr(hit, ep_tokens[ti])) != NULL) {
+			const char *after = hit + tlen;
+			if (isdigit((unsigned char)*after)) {
+				char *end;
+				long n = strtol(after, &end, 10);
+				if (end > after)
+					return n;
+			}
+			hit++;
+		}
+	}
+
+	/* (b) A path segment that is entirely digits (e.g. .../9/ or .../10). */
+	const char *p = url;
+	const char *sep = strstr(url, "://");
+	if (sep)
+		p = sep + 3;
+	/* Walk past the authority (host[:port]). */
+	const char *slash = strchr(p, '/');
+	if (slash)
+		p = slash;
+	/* Scan each path segment. */
+	while (*p == '/') {
+		p++;
+		size_t seglen = strcspn(p, "/?#");
+		if (seglen > 0) {
+			/* Is this segment purely numeric? */
+			int all_digits = 1;
+			for (size_t i = 0; i < seglen; i++) {
+				if (!isdigit((unsigned char)p[i])) {
+					all_digits = 0;
+					break;
+				}
+			}
+			if (all_digits && seglen <= 6) { /* cap to avoid huge IDs */
+				char *end;
+				long n = strtol(p, &end, 10);
+				if (end == p + seglen)
+					return n;
+			}
+		}
+		p += seglen;
+	}
+
+	return -1;
 }
 
 static int

@@ -400,62 +400,90 @@ extractor_resolve_url(const char *base, const char *ref)
 	if (!ref)
 		return NULL;
 
+	/* Un-escape JSON-slash sequences ("\/" -> "/") so captured URLs like
+	 * "https:\/\/host\/path.mp4" resolve correctly. See #json-embedded-media. */
+	char *unesc = NULL;
+	if (strstr(ref, "\\/") != NULL) {
+		size_t n = strlen(ref);
+		unesc = malloc(n + 1);
+		if (!unesc)
+			return NULL;
+		size_t o = 0;
+		for (size_t i = 0; i < n; i++) {
+			if (ref[i] == '\\' && ref[i + 1] == '/')
+				i++;	/* skip the backslash; keep the slash */
+			unesc[o++] = ref[i];
+		}
+		unesc[o] = '\0';
+		ref = unesc;
+	}
+
+	char *out = NULL;
+
 	/* Absolute reference (has its own scheme): use as-is. */
-	if (strstr(ref, "://") != NULL)
-		return ext_strdup(ref);
+	if (strstr(ref, "://") != NULL) {
+		out = ext_strdup(ref);
+		goto done;
+	}
 
 	size_t authlen = url_authority_len(base);
-	if (authlen == 0)	/* base not absolute: best effort, return ref */
-		return ext_strdup(ref);
+	if (authlen == 0) {	/* base not absolute: best effort, return ref */
+		out = ext_strdup(ref);
+		goto done;
+	}
 
 	/* Scheme-relative: //host/path */
 	if (ref[0] == '/' && ref[1] == '/') {
 		const char *sep = strstr(base, "://");
 		size_t schemelen = (size_t)(sep - base) + 1;	/* include ':' */
 		size_t reflen = strlen(ref);
-		char *out = malloc(schemelen + reflen + 1);
-		if (!out)
-			return NULL;
-		memcpy(out, base, schemelen);
-		memcpy(out + schemelen, ref, reflen + 1);
-		return out;
+		out = malloc(schemelen + reflen + 1);
+		if (out) {
+			memcpy(out, base, schemelen);
+			memcpy(out + schemelen, ref, reflen + 1);
+		}
+		goto done;
 	}
 
 	/* Absolute path: replace everything after the authority. */
 	if (ref[0] == '/') {
 		size_t reflen = strlen(ref);
-		char *out = malloc(authlen + reflen + 1);
-		if (!out)
-			return NULL;
-		memcpy(out, base, authlen);
-		memcpy(out + authlen, ref, reflen + 1);
-		return out;
+		out = malloc(authlen + reflen + 1);
+		if (out) {
+			memcpy(out, base, authlen);
+			memcpy(out + authlen, ref, reflen + 1);
+		}
+		goto done;
 	}
 
 	/* Relative path: keep base up to and including the last '/' of its
 	 * path (after the authority), then append ref. */
-	const char *path = base + authlen;
-	const char *q = path + strcspn(path, "?#");	/* drop query/fragment */
-	const char *lastslash = NULL;
-	for (const char *c = path; c < q; c++)
-		if (*c == '/')
-			lastslash = c;
+	{
+		const char *path = base + authlen;
+		const char *q = path + strcspn(path, "?#");
+		const char *lastslash = NULL;
+		for (const char *c = path; c < q; c++)
+			if (*c == '/')
+				lastslash = c;
 
-	size_t dirlen;
-	if (lastslash)
-		dirlen = (size_t)(lastslash - base) + 1;
-	else
-		dirlen = authlen;	/* no path slash: base authority + '/' */
+		size_t dirlen;
+		if (lastslash)
+			dirlen = (size_t)(lastslash - base) + 1;
+		else
+			dirlen = authlen;
 
-	size_t reflen = strlen(ref);
-	int need_slash = !lastslash;	/* insert a '/' after a bare authority */
-	char *out = malloc(dirlen + need_slash + reflen + 1);
-	if (!out)
-		return NULL;
-	memcpy(out, base, dirlen);
-	if (need_slash)
-		out[dirlen] = '/';
-	memcpy(out + dirlen + need_slash, ref, reflen + 1);
+		size_t reflen = strlen(ref);
+		int need_slash = !lastslash;
+		out = malloc(dirlen + need_slash + reflen + 1);
+		if (out) {
+			memcpy(out, base, dirlen);
+			if (need_slash)
+				out[dirlen] = '/';
+			memcpy(out + dirlen + need_slash, ref, reflen + 1);
+		}
+	}
+done:
+	free(unesc);
 	return out;
 }
 

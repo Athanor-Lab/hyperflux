@@ -415,8 +415,11 @@ static const struct scan_pattern scan_patterns[] = {
 	  SCAN_CTX_PLAYER },
 	{ "[\"']source[\"'][[:space:]]*:[[:space:]]*[\"']([^\"']+)[\"']",
 	  SCAN_CTX_PLAYER },
-	/* Catch-all: any bare media URL in the text (unknown context). */
-	{ "(https?:[^\"'[:space:]<>()]+\\.(m3u8|mp4|webm)([?#][^\"'[:space:]<>()]*)?)",
+	/* Catch-all: any bare media URL in the text (unknown context).
+	 * '&' is excluded from the PATH class so &quot; in HTML-attribute JSON
+	 * doesn't bleed across into a later .mp4, but the optional query/fragment
+	 * allows '&' so signed URLs like ?token=abc&expires=123 are not truncated. */
+	{ "(https?:[^\"'[:space:]<>()&]+\\.(m3u8|mp4|webm)([?#][^\"'[:space:]<>()]*)?)",
 	  SCAN_CTX_UNKNOWN },
 };
 
@@ -430,6 +433,8 @@ static const char *const scan_og_video_ere =
  * re-scan its body for candidates (one level deep). Returns 0 or -1. */
 static int
 collect_iframes(struct scan_ctx *ctx, const char *text, int depth);
+static int
+collect_gdrive(struct scan_ctx *ctx, const char *text);
 
 /* Run every built-in pattern over `text`. Returns 0 or -1 (OOM). */
 static int
@@ -442,6 +447,210 @@ collect_patterns(struct scan_ctx *ctx, const char *text)
 			return -1;
 	if (collect_regex(ctx, text, scan_og_video_ere, SCAN_CTX_PLAYER) < 0)
 		return -1;
+	if (collect_gdrive(ctx, text) < 0)
+		return -1;
+	return 0;
+}
+
+/* ---- Google Drive recognition ----------------------------------------- */
+
+/* Extract the Google Drive file ID from a GDrive share/view URL.
+ * Returns 1 and writes into id_out (NUL-terminated, max id_len) on success.
+ * Recognises:
+ *   drive.google.com/open?id=<ID>
+ *   drive.google.com/file/d/<ID>/...
+ *   drive.google.com/uc?...id=<ID>
+ *   docs.google.com/.../d/<ID>/...
+ * <ID> is [A-Za-z0-9_-]+ (at least 10 chars to avoid false positives). */
+static int
+gdrive_extract_id(const char *url, char *id_out, size_t id_len)
+{
+	if (!url || id_len == 0)
+		return 0;
+
+	/* file/d/<ID> or .../d/<ID> form (Drive and Docs). */
+	const char *fd = strstr(url, "/d/");
+	if (fd) {
+		const char *start = fd + 3;
+		size_t n = strspn(start, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-");
+		if (n >= 10 && n < id_len) {
+			memcpy(id_out, start, n);
+			id_out[n] = '\0';
+			return 1;
+		}
+	}
+
+	/* ?id=<ID> or &id=<ID> query param form. */
+	const char *idp = strstr(url, "id=");
+	while (idp) {
+		if (idp == url || idp[-1] == '?' || idp[-1] == '&') {
+			const char *start = idp + 3;
+			size_t n = strspn(start, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-");
+			if (n >= 10 && n < id_len) {
+				memcpy(id_out, start, n);
+				id_out[n] = '\0';
+				return 1;
+			}
+		}
+		idp = strstr(idp + 1, "id=");
+	}
+	return 0;
+}
+
+/* Is this URL a Google Drive share/view link (any recognised form)? */
+int
+is_gdrive_url(const char *url)
+{
+	if (!url)
+		return 0;
+	/* Must be drive.google.com or docs.google.com (after scheme). */
+	const char *sep = strstr(url, "://");
+	if (!sep)
+		return 0;
+	const char *host_start = sep + 3;
+	/* Accept www. prefix too. */
+	if (strncmp(host_start, "www.", 4) == 0)
+		host_start += 4;
+	return (strncmp(host_start, "drive.google.com/", 17) == 0 ||
+		strncmp(host_start, "docs.google.com/", 16) == 0);
+}
+
+/* Build the canonical download URL for a GDrive file ID. */
+static int
+gdrive_download_url(const char *id, char *out, size_t outlen)
+{
+	int n = snprintf(out, outlen,
+		"https://drive.usercontent.google.com/download?id=%s"
+		"&export=download&confirm=t", id);
+	return (n > 0 && (size_t)n < outlen) ? 1 : 0;
+}
+
+/* Normalise any Google Drive URL form to the canonical usercontent download
+ * URL.  Returns a malloc'd string on success, NULL if url is not a GDrive URL
+ * or the ID cannot be extracted.  The caller must free the returned string.
+ * Idempotent: the canonical URL maps to itself. */
+char *
+gdrive_normalize(const char *url)
+{
+	if (!url || !is_gdrive_url(url))
+		return NULL;
+	char id[256];
+	if (!gdrive_extract_id(url, id, sizeof(id)))
+		return NULL;
+	char dl[512];
+	if (!gdrive_download_url(id, dl, sizeof(dl)))
+		return NULL;
+	return scan_strdup(dl);
+}
+
+/* Add a direct GDrive candidate from a raw GDrive share URL captured from the
+ * page.  Resolves the ID, builds the canonical download URL, and records it
+ * as SCAN_KIND_GDRIVE.  `filed` is 1 if the raw URL used the file/d/<ID> form.
+ * Returns 0 on success (or benign no-op), -1 on OOM. */
+static int
+add_gdrive_candidate(struct scan_ctx *ctx, const char *raw_gdrive_url, int filed)
+{
+	if (!raw_gdrive_url || !*raw_gdrive_url)
+		return 0;
+
+	/* Resolve any relative URLs first (unlikely but defensive). */
+	char *abs = extractor_resolve_url(ctx->page_url, raw_gdrive_url);
+	if (!abs)
+		return -1;
+
+	if (!is_gdrive_url(abs)) {
+		free(abs);
+		return 0;
+	}
+
+	char id[256];
+	if (!gdrive_extract_id(abs, id, sizeof(id))) {
+		free(abs);
+		return 0;
+	}
+	free(abs);
+
+	char dl_url[512];
+	if (!gdrive_download_url(id, dl_url, sizeof(dl_url)))
+		return 0;
+
+	scan_result_t *r = ctx->result;
+
+	/* Deduplicate by canonical download URL. */
+	for (size_t i = 0; i < r->ncands; i++) {
+		if (strcmp(r->cands[i].url, dl_url) == 0) {
+			r->cands[i].count++;
+			return 0;
+		}
+	}
+	if (r->ncands >= SCAN_MAX_CANDIDATES)
+		return 0;
+
+	char *url = scan_strdup(dl_url);
+	if (!url)
+		return -1;
+	char *host = url_host(url);
+	scan_candidate_t *c = &r->cands[r->ncands];
+	memset(c, 0, sizeof(*c));
+	c->url          = url;
+	c->host         = host;
+	c->kind         = SCAN_KIND_GDRIVE;
+	c->context      = SCAN_CTX_PLAYER;
+	c->size         = -1;
+	c->count        = 1;
+	c->gdrive_filed = filed;
+	r->ncands++;
+	return 0;
+}
+
+/* Scan `text` for GDrive share/view links and add each as a candidate.
+ * Returns 0 on success, -1 on OOM. */
+static int
+collect_gdrive(struct scan_ctx *ctx, const char *text)
+{
+	/* Match href="https://drive.google.com/..." (with or without HTML-encoded
+	 * &amp; between query params, since WordPress encodes href attributes). */
+	static const char *const gdrive_eres[] = {
+		"href=[\"'](https?://drive\\.google\\.com/open\\?id=[A-Za-z0-9_-]+[^\"'<>]*)[\"']",
+		"href=[\"'](https?://drive\\.google\\.com/file/d/[A-Za-z0-9_-]+[^\"'<>]*)[\"']",
+		"href=[\"'](https?://drive\\.google\\.com/uc\\?[^\"'<>]*id=[A-Za-z0-9_-]+[^\"'<>]*)[\"']",
+	};
+
+	for (size_t ei = 0; ei < sizeof(gdrive_eres) / sizeof(gdrive_eres[0]); ei++) {
+		regex_t re;
+		if (regcomp(&re, gdrive_eres[ei], REG_EXTENDED | REG_ICASE) != 0)
+			continue;
+		regmatch_t m[2];
+		const char *p = text;
+		while (regexec(&re, p, 2, m, 0) == 0) {
+			if (m[1].rm_so >= 0) {
+				size_t len = (size_t)(m[1].rm_eo - m[1].rm_so);
+				char *raw = scan_strndup(p + m[1].rm_so, len);
+				if (!raw) { regfree(&re); return -1; }
+				/* Un-HTML-encode &amp; -> & so ID extraction works. */
+				char clean[1024];
+				size_t co = 0;
+				for (size_t ri = 0; ri < len && co + 1 < sizeof(clean); ri++) {
+					if (strncmp(raw + ri, "&amp;", 5) == 0) {
+						clean[co++] = '&';
+						ri += 4;
+					} else {
+						clean[co++] = raw[ri];
+					}
+				}
+				clean[co] = '\0';
+				free(raw);
+				/* ei==1 is the file/d/<ID> pattern */
+				int ar = add_gdrive_candidate(ctx, clean, ei == 1);
+				if (ar < 0) { regfree(&re); return -1; }
+			}
+			regoff_t adv = m[0].rm_eo > m[0].rm_so ? m[0].rm_eo : m[0].rm_so + 1;
+			if (adv <= 0) break;
+			p += adv;
+			if (p > text + strlen(text)) break;
+		}
+		regfree(&re);
+	}
 	return 0;
 }
 
@@ -1911,6 +2120,135 @@ sort_candidates(scan_result_t *r)
 	}
 }
 
+/* If the landing page has >= SCAN_SERIES_MIN direct-media candidates that share
+ * a numeric template (maximal [0-9]+ runs replaced with '#'), mark the result
+ * as a media-list series and build list_ere from the dominant extension.
+ * Also handles GDrive series (no numeric template required).
+ * Returns 0 on success, -1 on OOM. No-op when is_series already set. */
+static int
+detect_direct_media_series(scan_result_t *r)
+{
+	if (r->is_series || r->ncands < SCAN_SERIES_MIN)
+		return 0;
+	/* Only fire when all candidates are depth-0 (direct, no chain). */
+	for (size_t i = 0; i < r->ncands; i++)
+		if (r->cands[i].nchain > 0)
+			return 0;
+
+	/* GDrive series: >= SCAN_SERIES_MIN GDrive candidates => series.
+	 * IDs are random so no numeric template is needed.  Pick the list ERE
+	 * based on the predominant raw link form seen on the page (open?id= vs
+	 * file/d/); that form is recorded on each candidate by collect_gdrive. */
+	{
+		size_t ngdrive = 0;
+		size_t nfiled  = 0;
+		for (size_t i = 0; i < r->ncands; i++) {
+			if (r->cands[i].kind != SCAN_KIND_GDRIVE)
+				continue;
+			ngdrive++;
+			if (r->cands[i].gdrive_filed)
+				nfiled++;
+		}
+		if (ngdrive >= SCAN_SERIES_MIN && ngdrive == r->ncands) {
+			/* Pick the predominant raw page link form. */
+			int use_filed = (nfiled * 2 >= ngdrive); /* majority */
+			const char *list_ere = use_filed
+				? "(https?://drive\\.google\\.com/file/d/[A-Za-z0-9_-]+)"
+				: "(https?://drive\\.google\\.com/open\\?id=[A-Za-z0-9_-]+)";
+			regex_t re;
+			if (regcomp(&re, list_ere, REG_EXTENDED | REG_ICASE) != 0)
+				return 0;
+			regfree(&re);
+			char *le = scan_strdup(list_ere);
+			if (!le)
+				return -1;
+			r->list_ere  = le;
+			r->is_series = 1;
+			/* Stash the form so scan_emit_config can emit the right var. */
+			r->gdrive_series_filed = use_filed;
+			return 0;
+		}
+	}
+
+	/* Template: replace every maximal [0-9]+ run with '#'.
+	 * Count how many candidates share the most common template. */
+	char templates[SCAN_MAX_CANDIDATES][512];
+	size_t ntmpl = r->ncands;
+	for (size_t i = 0; i < ntmpl; i++) {
+		const char *src = r->cands[i].url;
+		size_t o = 0;
+		for (const char *p = src; *p && o + 2 < sizeof(templates[i]); ) {
+			if (isdigit((unsigned char)*p)) {
+				if (o + 1 < sizeof(templates[i]))
+					templates[i][o++] = '#';
+				while (isdigit((unsigned char)*p))
+					p++;
+			} else {
+				templates[i][o++] = *p++;
+			}
+		}
+		templates[i][o] = '\0';
+	}
+
+	/* Find dominant template (most members). */
+	size_t best_cnt = 0;
+	size_t best_ti  = 0;
+	for (size_t i = 0; i < ntmpl; i++) {
+		size_t cnt = 0;
+		for (size_t j = 0; j < ntmpl; j++)
+			if (strcmp(templates[i], templates[j]) == 0)
+				cnt++;
+		if (cnt > best_cnt) {
+			best_cnt = cnt;
+			best_ti  = i;
+		}
+	}
+	if (best_cnt < SCAN_SERIES_MIN)
+		return 0;
+
+	/* Detect the file extension from the dominant template's representative
+	 * URL (e.g. "mp4"). Strip query/fragment first so strrchr('.') doesn't
+	 * produce ext="mp4?token=ABC" and a malformed ERE. */
+	const char *rep_url = r->cands[best_ti].url;
+	/* Find end of path (before '?' or '#'). */
+	size_t path_len = strcspn(rep_url, "?#");
+	char path_only[512];
+	if (path_len >= sizeof(path_only))
+		path_len = sizeof(path_only) - 1;
+	memcpy(path_only, rep_url, path_len);
+	path_only[path_len] = '\0';
+
+	const char *dot = strrchr(path_only, '.');
+	if (!dot || dot[1] == '\0')
+		return 0;
+	const char *ext = dot + 1;
+
+	/* Build ERE: (https?:[^"'<> &]+\.<ext>([?#][^"'<> ]*)?).
+	 * POSIX ERE, one capture group, no braces, regcomp-verified before storing.
+	 * The optional query tail reuses the catch-all shape so signed URLs with
+	 * &-separated params are captured in full. */
+	char ere[160];
+	int n = snprintf(ere, sizeof(ere),
+			 "(https?:[^\"'<> &]+\\.%s([?#][^\"'<> ]*)?)", ext);
+	if (n <= 0 || (size_t)n >= sizeof(ere))
+		return 0;
+
+	regex_t re;
+	if (regcomp(&re, ere, REG_EXTENDED | REG_ICASE) != 0)
+		return 0;
+	regfree(&re);
+
+	char *list_ere = scan_strdup(ere);
+	if (!list_ere)
+		return -1;
+
+	r->list_ere  = list_ere;
+	r->is_series = 1;
+	/* series_path left NULL: match is derived from host + landing path segment
+	 * in scan_emit_config via the is_series branch. */
+	return 0;
+}
+
 /* ---- public: scan ----------------------------------------------------- */
 
 scan_result_t *
@@ -1990,16 +2328,34 @@ scan_page(const char *page_url, extractor_fetch_fn fetch, scan_probe_fn probe,
 	free(body);
 	for (size_t i = 0; i < ctx.nvisited; i++)
 		free(ctx.visited[i]);
+	ctx.nvisited = 0; /* prevent double-free if detect_direct_media_series OOMs */
 
-	/* Enrich and score (recursive candidates participate in scoring). */
+	/* Enrich and score (recursive candidates participate in scoring).
+	 * Skip GDrive (no HEAD needed) and cap file probes. See #perf-scan. */
+#define SCAN_MAX_PROBES 12
+	int nprobes = 0;
 	for (size_t i = 0; i < r->ncands; i++) {
 		if (r->cands[i].kind == SCAN_KIND_HLS)
 			enrich_hls(&ctx, &r->cands[i]);
-		else
+		else if (r->cands[i].kind == SCAN_KIND_GDRIVE)
+			; /* skip: slow HEAD + irrelevant for ranking */
+		else if (nprobes < SCAN_MAX_PROBES) {
 			enrich_file(&ctx, &r->cands[i]);
+			nprobes++;
+		}
 	}
 	score_candidates(r);
 	sort_candidates(r);
+
+	/* Promote direct multi-episode pages (all URLs in the page, numeric
+	 * template) to a media-list series so emit generates a list config. */
+	if (detect_direct_media_series(r) < 0) {
+		for (size_t i = 0; i < ctx.nvisited; i++)
+			free(ctx.visited[i]);
+		scan_set_err(err, "out of memory while scanning page");
+		scan_result_free(r);
+		return NULL;
+	}
 
 	return r;
 }
@@ -2173,7 +2529,8 @@ emit_candidate_comments(const scan_result_t *r, FILE *out)
 	for (size_t i = 0; i < r->ncands; i++) {
 		const scan_candidate_t *d = &r->cands[i];
 		fprintf(out, "#   [%zu] %s%s\n", i,
-			d->kind == SCAN_KIND_HLS ? "(hls)  " : "(file) ",
+			d->kind == SCAN_KIND_HLS    ? "(hls)    " :
+			d->kind == SCAN_KIND_GDRIVE ? "(gdrive) " : "(file)   ",
 			d->url);
 		fprintf(out, "#        score=%.0f", d->score);
 		if (d->duration > 0)
@@ -2294,7 +2651,18 @@ scan_emit_config(const scan_result_t *r, int chosen, FILE *out)
 		fprintf(out, "get    page <- {url}\n");
 		fprintf(out, "list   eps  <- page regex %s\n", r->list_ere);
 		fprintf(out, "\n");
-		if (c && c->nchain >= 1) {
+		if (c && c->nchain == 0 && c->kind == SCAN_KIND_GDRIVE) {
+			/* GDrive series: listed URL is the share link; extract the ID
+			 * using the right regex for the link form on this page. */
+			if (r->gdrive_series_filed)
+				fprintf(out, "var    gid  <- url regex /d/([A-Za-z0-9_-]+)\n");
+			else
+				fprintf(out, "var    gid  <- url regex id=([A-Za-z0-9_-]+)\n");
+			fprintf(out, "output https://drive.usercontent.google.com/download?id={gid}&export=download&confirm=t\n");
+		} else if (c && c->nchain == 0) {
+			/* Direct media-list series: each listed URL IS the media. */
+			fprintf(out, "output {url}\n");
+		} else if (c && c->nchain >= 1) {
 			fprintf(out, "# per-episode pipeline ({url} is each episode):\n");
 			if (c->param_token)
 				emit_param_pipeline(c, out);
@@ -2356,10 +2724,22 @@ scan_emit_config(const scan_result_t *r, int chosen, FILE *out)
 
 	/* DIRECT: the chosen media URL is present in the page text, so a static
 	 * output line resolves it directly. The user can swap in a different [N]. */
-	fprintf(out, "# Media URL detected directly in the page.\n");
-	if (c->kind == SCAN_KIND_HLS)
-		fprintf(out, "# HLS playlist -> downloaded segment-by-segment.\n");
-	fprintf(out, "output %s\n", c->url);
+	if (c->kind == SCAN_KIND_GDRIVE) {
+		/* Single GDrive video: capture the ID from the page link using the
+		 * right regex for the form seen on this page. */
+		fprintf(out, "# Google Drive video detected; 1-hop download config:\n");
+		fprintf(out, "get    page0 <- {url}\n");
+		if (c->gdrive_filed)
+			fprintf(out, "var    gid   <- page0 regex drive\\.google\\.com/file/d/([A-Za-z0-9_-]+)\n");
+		else
+			fprintf(out, "var    gid   <- page0 regex drive\\.google\\.com/open\\?id=([A-Za-z0-9_-]+)\n");
+		fprintf(out, "output https://drive.usercontent.google.com/download?id={gid}&export=download&confirm=t\n");
+	} else {
+		fprintf(out, "# Media URL detected directly in the page.\n");
+		if (c->kind == SCAN_KIND_HLS)
+			fprintf(out, "# HLS playlist -> downloaded segment-by-segment.\n");
+		fprintf(out, "output %s\n", c->url);
+	}
 
 	free(host);
 	return 0;

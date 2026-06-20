@@ -568,6 +568,10 @@ test_resolve_url(void)
 		      "https://h.com/a/b/ep.mp4");
 	check_resolve("https://h.com/play/foo/AbC123", "/api/ep?id=1",
 		      "https://h.com/api/ep?id=1");
+	/* JSON-embedded media: backslash-slash sequences must be unescaped. */
+	check_resolve("https://base.test/x/",
+		      "https:\\/\\/host.test\\/a\\/b.mp4",
+		      "https://host.test/a/b.mp4");
 }
 
 /* ---- no-match passthrough (resolve with a missing config dir) ----------- */
