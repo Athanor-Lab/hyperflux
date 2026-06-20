@@ -70,6 +70,7 @@
 typedef enum {
 	SCAN_KIND_FILE = 0,	/* direct .mp4/.webm/... */
 	SCAN_KIND_HLS,		/* .m3u8 playlist */
+	SCAN_KIND_GDRIVE,	/* Google Drive download URL */
 } scan_kind_t;
 
 /* Where the URL was found, used as a scoring signal. */
@@ -105,6 +106,7 @@ typedef struct {
 	size_t nchain;		/* capture steps; last captures media, earlier capture links. 0 = direct. */
 	char *param_token;	/* e.g. "file" when page0 has file=NAME.mp4 and media is at base/NAME.mp4 */
 	char *media_base;	/* e.g. "https://cdn/videos/" — prefix before the param value in the media URL */
+	int gdrive_filed;	/* 1 if raw page link was file/d/<ID> form; 0 if open?id= or uc? */
 } scan_candidate_t;
 
 /* A scan result: the page URL and the ranked candidate list (best first). */
@@ -115,6 +117,7 @@ typedef struct {
 	int is_series;		/* landing page looks like an episode index */
 	char *list_ere;		/* reusable ERE capturing episode hrefs for `list` (owned), or NULL */
 	char *series_path;	/* a stable path token for the match line, e.g. "/play/" (owned), or NULL */
+	int gdrive_series_filed; /* 1 if GDrive series uses file/d/ form; 0 if open?id= */
 } scan_result_t;
 
 /* Probe a direct file URL for its size. Store the byte length in *out_size and
@@ -160,5 +163,13 @@ int scan_emit_config(const scan_result_t *r, int chosen, FILE *out);
  * <name>.conf. Writes a NUL-terminated name into `dst`. Returns 0 on success,
  * negative on a NULL/empty argument. */
 int scan_config_name(const scan_result_t *r, char *dst, size_t len);
+
+/* True if url is a Google Drive share/view link (any recognised form). */
+int is_gdrive_url(const char *url);
+
+/* Normalise any Google Drive URL form to the canonical usercontent download
+ * URL.  Returns a malloc'd string on success, NULL if url is not a GDrive URL
+ * or the ID cannot be extracted.  Caller must free. */
+char *gdrive_normalize(const char *url);
 
 #endif				/* FLUX_SCAN_H */
