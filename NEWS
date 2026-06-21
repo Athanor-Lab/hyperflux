@@ -1,3 +1,13 @@
+Hyperflux (unreleased)
+======================
+
+--extract-scan can now find any file type, not just streaming video. By default
+it looks for video and audio; pass --scan-ext=iso,zip,mkv,flac (any extensions,
+any type) to scan for those instead, which also works on a plain directory
+listing. When a page has more than one matching file, flux opens a multi-select
+so you choose which ones go into the generated config.
+
+
 Hyperflux 2.1.0 (2026-06-19)
 ============================
 

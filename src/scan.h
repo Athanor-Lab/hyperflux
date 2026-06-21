@@ -90,6 +90,9 @@ typedef struct {
 /* One scored media candidate. */
 typedef struct {
 	char *url;		/* resolved absolute media URL (owned) */
+	char *raw_ref;		/* the ref exactly as captured from the page body (owned); used by
+				 * scan_emit_config_selection to build an alternation that matches the
+				 * page body (relative hrefs don't appear as absolute URLs). */
 	char *host;		/* host of url (owned), for the blocklist/uniqueness */
 	scan_kind_t kind;
 	scan_ctx_t context;
@@ -136,12 +139,18 @@ typedef int (*scan_probe_fn)(const char *url, long long *out_size,
  * chain that leads to it (so a multi-step config can be generated). It also
  * detects series index pages. `max_depth == 0` disables recursion.
  *
+ * `exts`/`nexts` is an optional extension filter (NULL/0 = default media bias:
+ * video + audio + HLS). When non-NULL, only those extensions are recognised,
+ * all classified SCAN_KIND_FILE, so any file type (archives, disk images,
+ * documents, ...) can be discovered on directory-listing pages. See #17.
+ *
  * On success returns a malloc'd scan_result_t (free with scan_result_free) with
  * a scored, ranked candidate list and *err left NULL. On failure returns NULL
  * and, if err is non-NULL, sets *err to a malloc'd message the caller frees.
  * A page that yields no candidates is a success with ncands == 0. */
 scan_result_t *scan_page(const char *page_url, extractor_fetch_fn fetch,
 			 scan_probe_fn probe, int max_depth,
+			 const char *const *exts, size_t nexts,
 			 void *userdata, char **err);
 
 void scan_result_free(scan_result_t *r);
@@ -157,6 +166,17 @@ int scan_is_ad_host(const char *host);
  * otherwise a skeleton with detected pieces and guided TODO comments is written.
  * Returns 0 on success, negative on a write/argument error. */
 int scan_emit_config(const scan_result_t *r, int chosen, FILE *out);
+
+/* Emit a `list` config that resolves EXACTLY the candidates in `sel`
+ * (`nsel` 0-based indices into r->cands). Used after a multi-select TUI so the
+ * generated config includes only the chosen files. When the selection is a
+ * single candidate, a single-output config is written (same shape as the
+ * chosen-index scan_emit_config path). With 2+ selected files an ERE-escaped
+ * alternation of their absolute URLs drives a `list` directive. The ERE is
+ * regcomp-verified with exactly one capture group. Returns 0 on success,
+ * negative on a write/argument/regex error. */
+int scan_emit_config_selection(const scan_result_t *r, const size_t *sel,
+			       size_t nsel, FILE *out);
 
 /* Derive the host-based config name scan_emit_config writes (e.g.
  * www.animeworld.ac -> "animeworld"), used to build the default save filename

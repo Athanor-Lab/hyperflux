@@ -140,27 +140,6 @@ url_host(const char *url)
 	return h;
 }
 
-/* Return the first non-empty path segment of `url` as a malloc'd string, or
- * NULL if none exists (e.g. "https://host/" or no scheme). */
-static char *
-url_first_path_segment(const char *url)
-{
-	if (!url)
-		return NULL;
-	const char *sep = strstr(url, "://");
-	if (!sep)
-		return NULL;
-	const char *path = sep + 3;
-	path += strcspn(path, "/?#");	/* skip authority */
-	if (*path != '/')
-		return NULL;
-	path++;				/* skip leading slash */
-	size_t n = strcspn(path, "/?#");
-	if (n == 0)
-		return NULL;
-	return scan_strndup(path, n);
-}
-
 /* ---- ad-domain blocklist --------------------------------------------- */
 
 /* Small built-in list of ad/tracker hosts; a candidate on (or under) any of
@@ -222,27 +201,77 @@ scan_is_ad_host(const char *host)
 
 /* ---- candidate kind sniff -------------------------------------------- */
 
-/* Classify a media URL by its path extension. Returns 1 for a recognised media
- * URL (kind set), 0 for anything else. */
+/* Default extension table (exts == NULL): video + audio + HLS. HLS extensions
+ * classify as SCAN_KIND_HLS; every other entry is a direct file. The audio set
+ * widens the scan past the old video/HLS-only bias. See #17. */
+static const struct { const char *ext; scan_kind_t kind; } scan_default_exts[] = {
+	{ "m3u8", SCAN_KIND_HLS },
+	{ "m3u",  SCAN_KIND_HLS },
+	/* video */
+	{ "mp4",  SCAN_KIND_FILE },
+	{ "webm", SCAN_KIND_FILE },
+	{ "mkv",  SCAN_KIND_FILE },
+	{ "mov",  SCAN_KIND_FILE },
+	{ "m4v",  SCAN_KIND_FILE },
+	{ "avi",  SCAN_KIND_FILE },
+	{ "flv",  SCAN_KIND_FILE },
+	{ "ts",   SCAN_KIND_FILE },
+	{ "m2ts", SCAN_KIND_FILE },
+	{ "ogv",  SCAN_KIND_FILE },
+	/* audio */
+	{ "mp3",  SCAN_KIND_FILE },
+	{ "flac", SCAN_KIND_FILE },
+	{ "aac",  SCAN_KIND_FILE },
+	{ "opus", SCAN_KIND_FILE },
+	{ "ogg",  SCAN_KIND_FILE },
+	{ "oga",  SCAN_KIND_FILE },
+	{ "wav",  SCAN_KIND_FILE },
+	{ "m4a",  SCAN_KIND_FILE },
+	{ "weba", SCAN_KIND_FILE },
+	{ "wma",  SCAN_KIND_FILE },
+	{ "aiff", SCAN_KIND_FILE },
+	{ "alac", SCAN_KIND_FILE },
+};
+
+/* Classify a media URL by its path extension, using the active extension set
+ * (custom set from the ctx, or the default table when exts == NULL). The custom
+ * set matches ONLY those extensions, all SCAN_KIND_FILE. Match is on the path
+ * before ?# and case-insensitive. Returns 1 for a recognised URL (kind set),
+ * 0 for anything else. Tokens have no leading '.'. */
 static int
-classify_url(const char *url, scan_kind_t *kind)
+classify_url_ext(const char *url, const char *const *exts, size_t nexts,
+		 scan_kind_t *kind)
 {
 	size_t pathlen = strcspn(url, "?#");
 
-	static const struct { const char *ext; scan_kind_t kind; } exts[] = {
-		{ ".m3u8", SCAN_KIND_HLS },
-		{ ".m3u",  SCAN_KIND_HLS },
-		{ ".mp4",  SCAN_KIND_FILE },
-		{ ".webm", SCAN_KIND_FILE },
-		{ ".mkv",  SCAN_KIND_FILE },
-		{ ".mov",  SCAN_KIND_FILE },
-		{ ".m4v",  SCAN_KIND_FILE },
-	};
-	for (size_t i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
-		size_t el = strlen(exts[i].ext);
-		if (pathlen >= el &&
-		    strncasecmp(url + pathlen - el, exts[i].ext, el) == 0) {
-			*kind = exts[i].kind;
+	/* Custom set: any matching extension is a plain file. */
+	if (exts) {
+		for (size_t i = 0; i < nexts; i++) {
+			size_t el = strlen(exts[i]);
+			/* Need a '.' immediately before the extension on the path. */
+			if (el == 0 || pathlen < el + 1)
+				continue;
+			if (url[pathlen - el - 1] != '.')
+				continue;
+			if (strncasecmp(url + pathlen - el, exts[i], el) == 0) {
+				*kind = SCAN_KIND_FILE;
+				return 1;
+			}
+		}
+		return 0;
+	}
+
+	/* Default set: video + audio + HLS. */
+	for (size_t i = 0; i < sizeof(scan_default_exts) / sizeof(scan_default_exts[0]);
+	     i++) {
+		size_t el = strlen(scan_default_exts[i].ext);
+		if (pathlen < el + 1)
+			continue;
+		if (url[pathlen - el - 1] != '.')
+			continue;
+		if (strncasecmp(url + pathlen - el, scan_default_exts[i].ext, el)
+		    == 0) {
+			*kind = scan_default_exts[i].kind;
 			return 1;
 		}
 	}
@@ -265,7 +294,18 @@ struct scan_ctx {
 	/* page0 body for the filename-as-param heuristic. Points into caller's
 	 * buffer; NOT owned. NULL outside of discover_chain recursion. */
 	const char *page0_body;
+	/* Optional extension filter (NULL/0 = default video+audio+HLS bias).
+	 * Borrowed from the caller; NOT owned. See #17. */
+	const char *const *exts;
+	size_t nexts;
 };
+
+/* Classify against the ctx's active extension set. */
+static int
+classify_url(struct scan_ctx *ctx, const char *url, scan_kind_t *kind)
+{
+	return classify_url_ext(url, ctx->exts, ctx->nexts, kind);
+}
 
 /* Record `url` as visited; returns 1 if already seen, 0 if newly added/unrecordable.
  * Visited set is best-effort dedup: SCAN_MAX_FETCHES is the real termination bound. */
@@ -293,12 +333,28 @@ add_candidate(struct scan_ctx *ctx, const char *raw_ref, scan_ctx_t context)
 	if (!raw_ref || !*raw_ref)
 		return 0;
 
+	/* Reject any ref containing control characters (CR, LF, tab, etc.).
+	 * A crafted href with an embedded newline could inject extra directives
+	 * into the emitted config. See #17. */
+	for (const char *p = raw_ref; *p; p++)
+		if (iscntrl((unsigned char)*p))
+			return 0;
+
 	char *url = extractor_resolve_url(ctx->page_url, raw_ref);
 	if (!url)
 		return -1;
 
+	/* Also reject a resolved URL that contains control characters (defensive:
+	 * extractor_resolve_url should never produce one, but be explicit). */
+	for (const char *p = url; *p; p++) {
+		if (iscntrl((unsigned char)*p)) {
+			free(url);
+			return 0;
+		}
+	}
+
 	scan_kind_t kind;
-	if (!classify_url(url, &kind)) {
+	if (!classify_url(ctx, url, &kind)) {
 		free(url);
 		return 0;	/* not a media URL we handle */
 	}
@@ -325,10 +381,20 @@ add_candidate(struct scan_ctx *ctx, const char *raw_ref, scan_ctx_t context)
 		return 0;	/* cap: ignore further candidates */
 	}
 
+	/* Store the raw ref so scan_emit_config_selection can build an alternation
+	 * that matches what is ACTUALLY in the page body (relative hrefs on
+	 * directory listings don't appear as absolute URLs). See #17. */
+	char *rr = scan_strdup(raw_ref);
+	if (!rr) {
+		free(url);
+		return -1;
+	}
+
 	char *host = url_host(url);	/* may be NULL: best effort */
 	scan_candidate_t *c = &r->cands[r->ncands];
 	memset(c, 0, sizeof(*c));
 	c->url = url;
+	c->raw_ref = rr;
 	c->host = host;
 	c->kind = kind;
 	c->context = context;
@@ -415,12 +481,8 @@ static const struct scan_pattern scan_patterns[] = {
 	  SCAN_CTX_PLAYER },
 	{ "[\"']source[\"'][[:space:]]*:[[:space:]]*[\"']([^\"']+)[\"']",
 	  SCAN_CTX_PLAYER },
-	/* Catch-all: any bare media URL in the text (unknown context).
-	 * '&' is excluded from the PATH class so &quot; in HTML-attribute JSON
-	 * doesn't bleed across into a later .mp4, but the optional query/fragment
-	 * allows '&' so signed URLs like ?token=abc&expires=123 are not truncated. */
-	{ "(https?:[^\"'[:space:]<>()&]+\\.(m3u8|mp4|webm)([?#][^\"'[:space:]<>()]*)?)",
-	  SCAN_CTX_UNKNOWN },
+	/* The bare-URL catch-all is built dynamically from the active extension
+	 * set in collect_dynamic_ext (so audio/custom extensions are covered). */
 };
 
 /* The "og:video" two-pattern set captures group 2 in the first variant; to keep
@@ -428,6 +490,89 @@ static const struct scan_pattern scan_patterns[] = {
  * captured URL is group 1. Rewrite it here with the URL as group 1. */
 static const char *const scan_og_video_ere =
 	"property=[\"']og:video[^\"']*[\"'][^>]*content=[\"']([^\"']+)[\"']";
+
+/* Build an ERE-escaped extension alternation ("mp4|webm|m3u8") from the active
+ * extension set into `dst`. Tokens are alnum so the escape is defensive. The
+ * default set uses scan_default_exts; a custom set uses ctx->exts. Returns the
+ * number of tokens written (0 on an empty/overflowing set). */
+static size_t
+build_ext_alternation(struct scan_ctx *ctx, char *dst, size_t dlen)
+{
+	size_t o = 0, ntok = 0;
+	dst[0] = '\0';
+
+	size_t n = ctx->exts ? ctx->nexts
+		: sizeof(scan_default_exts) / sizeof(scan_default_exts[0]);
+	for (size_t i = 0; i < n; i++) {
+		const char *ext = ctx->exts ? ctx->exts[i]
+					    : scan_default_exts[i].ext;
+		if (!ext || !*ext)
+			continue;
+		if (ntok > 0) {
+			if (o + 1 >= dlen)
+				return 0;
+			dst[o++] = '|';
+		}
+		for (const char *p = ext; *p; p++) {
+			/* ERE-escape metacharacters defensively; {} included so a
+			 * crafted token can't form a brace quantifier. See #17. */
+			if (strchr(".^$*+?()|[]{}\\", *p)) {
+				if (o + 2 >= dlen)
+					return 0;
+				dst[o++] = '\\';
+			}
+			if (o + 1 >= dlen)
+				return 0;
+			dst[o++] = *p;
+		}
+		ntok++;
+	}
+	dst[o] = '\0';
+	return ntok;
+}
+
+/* Build the dynamic capture EREs from the active extension set and run each
+ * over `text`, capturing group 1 as a candidate. Covers a bare-URL catch-all
+ * and href/src catch-alls for directory listings and relative links. Each ERE
+ * is regcomp-verified inside collect_regex; an empty/bad set is skipped.
+ * Returns 0 on success, -1 on OOM. */
+static int
+collect_dynamic_ext(struct scan_ctx *ctx, const char *text)
+{
+	char alt[1024];
+	if (build_ext_alternation(ctx, alt, sizeof(alt)) == 0)
+		return 0;	/* empty/overflowing set: nothing to do */
+
+	/* Bare-URL catch-all: '&' excluded from the PATH class (so &quot; in
+	 * attribute JSON doesn't bleed), allowed in the optional query tail. The
+	 * URL is group 1. See #17 / FIX from #scan FIX C. */
+	char bare[1200];
+	int n = snprintf(bare, sizeof(bare),
+		"(https?:[^\"'[:space:]<>()&]+\\.(%s)([?#][^\"'[:space:]<>()]*)?)",
+		alt);
+	if (n > 0 && (size_t)n < sizeof(bare))
+		if (collect_regex(ctx, text, bare, SCAN_CTX_UNKNOWN) < 0)
+			return -1;
+
+	/* href/src catch-alls for directory listings and relative links. POSIX
+	 * ERE has no non-capturing group, so use two patterns each with the URL
+	 * as group 1; add_candidate resolves relative -> absolute. */
+	char href_ere[1200];
+	n = snprintf(href_ere, sizeof(href_ere),
+		     "href=[\"']([^\"'<>]+\\.(%s))[\"']", alt);
+	if (n > 0 && (size_t)n < sizeof(href_ere))
+		if (collect_regex(ctx, text, href_ere, SCAN_CTX_UNKNOWN) < 0)
+			return -1;
+
+	char src_ere[1200];
+	n = snprintf(src_ere, sizeof(src_ere),
+		     "src=[\"']([^\"'<>]+\\.(%s))[\"']", alt);
+	if (n > 0 && (size_t)n < sizeof(src_ere))
+		if (collect_regex(ctx, text, src_ere, SCAN_CTX_UNKNOWN) < 0)
+			return -1;
+
+	return 0;
+}
 
 /* Find same-origin <iframe src="URL"> targets in `text`, fetch each, and
  * re-scan its body for candidates (one level deep). Returns 0 or -1. */
@@ -446,6 +591,9 @@ collect_patterns(struct scan_ctx *ctx, const char *text)
 				  scan_patterns[i].context) < 0)
 			return -1;
 	if (collect_regex(ctx, text, scan_og_video_ere, SCAN_CTX_PLAYER) < 0)
+		return -1;
+	/* Dynamic bare-URL + href/src catch-alls from the active ext set. */
+	if (collect_dynamic_ext(ctx, text) < 0)
 		return -1;
 	if (collect_gdrive(ctx, text) < 0)
 		return -1;
@@ -1490,7 +1638,7 @@ discover_chain(struct scan_ctx *ctx, const char *body, scan_step_t *steps,
 			return -1;
 		}
 		scan_kind_t kind;
-		if (classify_url(media_url, &kind) && nsteps < SCAN_MAX_CHAIN) {
+		if (classify_url(ctx, media_url, &kind) && nsteps < SCAN_MAX_CHAIN) {
 			steps[nsteps].ere = (char *)scan_chain_media_eres[mi];
 			steps[nsteps].sample = media_url;
 			int ar = add_chain_candidate(ctx, media_url, kind,
@@ -2123,10 +2271,13 @@ sort_candidates(scan_result_t *r)
 /* If the landing page has >= SCAN_SERIES_MIN direct-media candidates that share
  * a numeric template (maximal [0-9]+ runs replaced with '#'), mark the result
  * as a media-list series and build list_ere from the dominant extension.
- * Also handles GDrive series (no numeric template required).
+ * Also handles GDrive series (no numeric template required). `body` is the
+ * landing page text, used to anchor the list ERE: absolute URLs present in the
+ * body use a bare-URL ERE; relative refs (directory listings) use a quoted-ref
+ * ERE the extractor resolves relative->absolute. See #17.
  * Returns 0 on success, -1 on OOM. No-op when is_series already set. */
 static int
-detect_direct_media_series(scan_result_t *r)
+detect_direct_media_series(scan_result_t *r, const char *body)
 {
 	if (r->is_series || r->ncands < SCAN_SERIES_MIN)
 		return 0;
@@ -2203,8 +2354,51 @@ detect_direct_media_series(scan_result_t *r)
 			best_ti  = i;
 		}
 	}
-	if (best_cnt < SCAN_SERIES_MIN)
-		return 0;
+	if (best_cnt < SCAN_SERIES_MIN) {
+		/* Numeric-template grouping failed. Fall back to extension-based
+		 * grouping: count candidates sharing the most common extension.
+		 * Covers mixed-distro autoindex pages (ubuntu-24.04.iso +
+		 * debian-12.iso) and any custom --scan-ext set. See #17. */
+		const char *best_ext = NULL;
+		size_t best_ecnt = 0;
+		for (size_t i = 0; i < r->ncands; i++) {
+			size_t plen = strcspn(r->cands[i].url, "?#");
+			const char *dot = NULL;
+			/* Find last '.' in the path portion. */
+			for (size_t k = 0; k < plen; k++)
+				if (r->cands[i].url[k] == '.')
+					dot = r->cands[i].url + k;
+			if (!dot || dot[1] == '\0')
+				continue;
+			const char *this_ext = dot + 1;
+			/* Count how many candidates share this extension (case-insensitive,
+			 * path only, no query/fragment). */
+			size_t ecnt = 0;
+			for (size_t j = 0; j < r->ncands; j++) {
+				size_t plen2 = strcspn(r->cands[j].url, "?#");
+				const char *dot2 = NULL;
+				for (size_t k = 0; k < plen2; k++)
+					if (r->cands[j].url[k] == '.')
+						dot2 = r->cands[j].url + k;
+				if (!dot2 || dot2[1] == '\0')
+					continue;
+				size_t elen = strcspn(this_ext, "?#");
+				size_t elen2 = strlen(dot2 + 1);
+				if (elen == elen2 &&
+				    strncasecmp(this_ext, dot2 + 1, elen) == 0)
+					ecnt++;
+			}
+			if (ecnt > best_ecnt) {
+				best_ecnt = ecnt;
+				best_ext  = this_ext;
+				best_ti   = i;
+			}
+		}
+		if (best_ecnt < SCAN_SERIES_MIN || !best_ext)
+			return 0;
+		/* best_ti now points to the representative candidate for the dominant
+		 * extension; fall through to the ERE-building block below. */
+	}
 
 	/* Detect the file extension from the dominant template's representative
 	 * URL (e.g. "mp4"). Strip query/fragment first so strrchr('.') doesn't
@@ -2223,15 +2417,46 @@ detect_direct_media_series(scan_result_t *r)
 		return 0;
 	const char *ext = dot + 1;
 
-	/* Build ERE: (https?:[^"'<> &]+\.<ext>([?#][^"'<> ]*)?).
-	 * POSIX ERE, one capture group, no braces, regcomp-verified before storing.
-	 * The optional query tail reuses the catch-all shape so signed URLs with
-	 * &-separated params are captured in full. */
-	char ere[160];
-	int n = snprintf(ere, sizeof(ere),
-			 "(https?:[^\"'<> &]+\\.%s([?#][^\"'<> ]*)?)", ext);
-	if (n <= 0 || (size_t)n >= sizeof(ere))
+	/* ERE-escape the extension token defensively; include {} so a brace
+	 * quantifier can't slip through. See #17. */
+	char ext_ere[80];
+	size_t eo = 0;
+	for (const char *p = ext; *p && eo + 2 < sizeof(ext_ere); p++) {
+		if (strchr(".^$*+?()|[]{}\\", *p))
+			ext_ere[eo++] = '\\';
+		ext_ere[eo++] = *p;
+	}
+	ext_ere[eo] = '\0';
+
+	/* Anchor the list ERE: prefer the bare-URL catch-all when a bare
+	 * https?: URL of this extension is present in the page body (JSON-embedded
+	 * media, signed URLs, autoindex with absolute links). When it is not (a
+	 * directory listing whose <a href> are relative refs), match a quoted ref
+	 * the extractor resolves relative->absolute. Both: one capture group, no
+	 * braces, regcomp-verified. See #17. */
+	char bare_ere[200];
+	int n = snprintf(bare_ere, sizeof(bare_ere),
+			 "(https?:[^\"'<> &]+\\.%s([?#][^\"'<> ]*)?)", ext_ere);
+	if (n <= 0 || (size_t)n >= sizeof(bare_ere))
 		return 0;
+
+	int bare_matches = 0;
+	regex_t bre;
+	if (regcomp(&bre, bare_ere, REG_EXTENDED | REG_ICASE) != 0)
+		return 0;
+	if (body && regexec(&bre, body, 0, NULL, 0) == 0)
+		bare_matches = 1;
+	regfree(&bre);
+
+	char ere[200];
+	if (bare_matches)
+		memcpy(ere, bare_ere, strlen(bare_ere) + 1);
+	else {
+		n = snprintf(ere, sizeof(ere),
+			     "[\"']([^\"'<>]+\\.%s)[\"']", ext_ere);
+		if (n <= 0 || (size_t)n >= sizeof(ere))
+			return 0;
+	}
 
 	regex_t re;
 	if (regcomp(&re, ere, REG_EXTENDED | REG_ICASE) != 0)
@@ -2253,7 +2478,8 @@ detect_direct_media_series(scan_result_t *r)
 
 scan_result_t *
 scan_page(const char *page_url, extractor_fetch_fn fetch, scan_probe_fn probe,
-	  int max_depth, void *userdata, char **err)
+	  int max_depth, const char *const *exts, size_t nexts,
+	  void *userdata, char **err)
 {
 	if (err)
 		*err = NULL;
@@ -2300,6 +2526,8 @@ scan_page(const char *page_url, extractor_fetch_fn fetch, scan_probe_fn probe,
 	ctx.fetch = fetch;
 	ctx.probe = probe;
 	ctx.userdata = userdata;
+	ctx.exts = exts;		/* NULL/0 = default video+audio+HLS bias */
+	ctx.nexts = nexts;
 	scan_visited(&ctx, page_url);	/* the landing page counts as visited */
 	ctx.nfetches = 1;		/* landing page already fetched above */
 
@@ -2325,7 +2553,6 @@ scan_page(const char *page_url, extractor_fetch_fn fetch, scan_probe_fn probe,
 			return NULL;
 		}
 	}
-	free(body);
 	for (size_t i = 0; i < ctx.nvisited; i++)
 		free(ctx.visited[i]);
 	ctx.nvisited = 0; /* prevent double-free if detect_direct_media_series OOMs */
@@ -2349,7 +2576,8 @@ scan_page(const char *page_url, extractor_fetch_fn fetch, scan_probe_fn probe,
 
 	/* Promote direct multi-episode pages (all URLs in the page, numeric
 	 * template) to a media-list series so emit generates a list config. */
-	if (detect_direct_media_series(r) < 0) {
+	if (detect_direct_media_series(r, body) < 0) {
+		free(body);
 		for (size_t i = 0; i < ctx.nvisited; i++)
 			free(ctx.visited[i]);
 		scan_set_err(err, "out of memory while scanning page");
@@ -2357,6 +2585,7 @@ scan_page(const char *page_url, extractor_fetch_fn fetch, scan_probe_fn probe,
 		return NULL;
 	}
 
+	free(body);
 	return r;
 }
 
@@ -2370,6 +2599,7 @@ scan_result_free(scan_result_t *r)
 	free(r->series_path);
 	for (size_t i = 0; i < r->ncands; i++) {
 		free(r->cands[i].url);
+		free(r->cands[i].raw_ref);
 		free(r->cands[i].host);
 		free(r->cands[i].param_token);
 		free(r->cands[i].media_base);
@@ -2469,7 +2699,8 @@ derive_name(const char *host, char *dst, size_t len)
 }
 
 /* Build a 'match' ERE from the page host: escape dots so the regex is literal
- * on the host (e.g. animeworld\.ac). Writes into dst (NUL-terminated). */
+ * on the host, then append (:[0-9]+)? so a port in the real URL doesn't break
+ * the match (e.g. 127.0.0.1:8080/...). Writes into dst (NUL-terminated). */
 static void
 derive_match(const char *host, char *dst, size_t len)
 {
@@ -2483,7 +2714,41 @@ derive_match(const char *host, char *dst, size_t len)
 			dst[o++] = '\\';
 		dst[o++] = *p;
 	}
+	/* Optional :port — local servers and non-standard ports need this. */
+	static const char port_tok[] = "(:[0-9]+)?";
+	if (o + sizeof(port_tok) < len) {
+		memcpy(dst + o, port_tok, sizeof(port_tok)); /* includes NUL */
+		o += sizeof(port_tok) - 1;
+	}
 	dst[o] = '\0';
+}
+
+/* Return the directory portion of `url`'s path as a malloc'd string: everything
+ * from the first '/' after the authority up to and including the last '/'.
+ * For "http://host:8080/isos/index.html" returns "/isos/".
+ * For "http://host/index.html" returns "/".
+ * Returns NULL if `url` has no scheme, or on OOM. */
+static char *
+url_dir_path(const char *url)
+{
+	if (!url)
+		return NULL;
+	const char *sep = strstr(url, "://");
+	if (!sep)
+		return NULL;
+	const char *auth = sep + 3;
+	const char *path = auth + strcspn(auth, "/?#");
+	if (*path != '/')
+		return scan_strdup("/");
+	/* Find the last '/' in the path (before any '?' or '#'). */
+	const char *pathend = path + strcspn(path, "?#");
+	const char *last_slash = path;
+	for (const char *p = path; p < pathend; p++)
+		if (*p == '/')
+			last_slash = p;
+	/* Include the last slash in the result. */
+	size_t n = (size_t)(last_slash - path) + 1;
+	return scan_strndup(path, n);
 }
 
 /* Resolve which candidate to emit: an explicit index, or the top-ranked one.
@@ -2618,14 +2883,14 @@ scan_emit_config(const scan_result_t *r, int chosen, FILE *out)
 	char match[256];
 	derive_name(host, name, sizeof(name));
 	derive_match(host, match, sizeof(match));
-	/* For series, tighten match from the LANDING page path so extractor_matches
-	 * fires on the series index URL, not on episode URLs. See #scan-series-match. */
+	/* For series, tighten match to the landing page's directory so
+	 * extractor_matches fires on the listing URL (including :port) but not on
+	 * individual file URLs under a different path. See #scan-series-match. */
 	if (r->is_series) {
-		char *seg = url_first_path_segment(r->page_url);
-		if (seg) {
-			match_append_path(match, sizeof(match), "/");
-			match_append_path(match, sizeof(match), seg);
-			free(seg);
+		char *dir = url_dir_path(r->page_url);
+		if (dir) {
+			match_append_path(match, sizeof(match), dir);
+			free(dir);
 		}
 	} else if (r->series_path) {
 		match_append_path(match, sizeof(match), r->series_path);
@@ -2742,6 +3007,159 @@ scan_emit_config(const scan_result_t *r, int chosen, FILE *out)
 	}
 
 	free(host);
+	return 0;
+}
+
+/* ERE-escape an absolute URL into `dst` so it matches literally inside an
+ * alternation branch. Returns 0 on success, -1 if it would overflow. */
+static int
+ere_escape_url(const char *url, char *dst, size_t dlen)
+{
+	size_t o = 0;
+	for (const char *p = url; *p; p++) {
+		if (strchr(".^$*+?()|[]{}\\", *p)) {
+			if (o + 2 >= dlen)
+				return -1;
+			dst[o++] = '\\';
+		}
+		if (o + 1 >= dlen)
+			return -1;
+		dst[o++] = *p;
+	}
+	dst[o] = '\0';
+	return 0;
+}
+
+int
+scan_emit_config_selection(const scan_result_t *r, const size_t *sel,
+			   size_t nsel, FILE *out)
+{
+	if (!r || !out || !sel || nsel == 0)
+		return -1;
+	for (size_t i = 0; i < nsel; i++)
+		if (sel[i] >= r->ncands)
+			return -1;	/* out-of-range index */
+
+	/* A single chosen file: emit a static output directly, bypassing the
+	 * series list path (the user picked exactly one file). See #17. */
+	if (nsel == 1) {
+		const scan_candidate_t *c = &r->cands[sel[0]];
+		char *host = url_host(r->page_url);
+		char name[128];
+		char match[256];
+		derive_name(host, name, sizeof(name));
+		derive_match(host, match, sizeof(match));
+		/* Anchor to the landing directory (covers :port). */
+		char *dir1 = url_dir_path(r->page_url);
+		if (dir1) {
+			match_append_path(match, sizeof(match), dir1);
+			free(dir1);
+		}
+		fprintf(out, "# Hyperflux extractor config (generated by --extract-scan)\n");
+		fprintf(out, "# Source page: %s\n", r->page_url);
+		fprintf(out, "# Review and edit before use: a config issues HTTP requests\n");
+		fprintf(out, "# with arbitrary headers. Treat shared configs like scripts.\n");
+		fprintf(out, "\n");
+		fprintf(out, "name   %s\n", name);
+		fprintf(out, "match  %s\n", match);
+		fprintf(out, "\n");
+		fprintf(out, "output %s\n", c->url);
+		free(host);
+		return 0;
+	}
+
+	/* Reuse the series machinery's live list_ere when the selection is every
+	 * candidate and a list_ere already roundtrips (covers directory listings
+	 * and JSON-embedded absolute-URL pages). */
+	int all_selected = (nsel == r->ncands);
+	if (all_selected && r->is_series && r->list_ere)
+		return scan_emit_config(r, -1, out);
+
+	/* Emit an exact alternation that matches what is ACTUALLY in the page
+	 * body. On directory listings the body has relative hrefs ("file.iso"),
+	 * not absolute URLs, so the alternation must be built from raw_ref (the
+	 * captured text before resolve). Fall back to the absolute URL only when
+	 * raw_ref is NULL (shouldn't happen for direct candidates) or when it
+	 * already looks absolute (starts with a scheme). The alternation is
+	 * wrapped as ["'](branch1|branch2)["'] so group 1 matches the href value,
+	 * exactly as the per-extension catch-all ERE does. POSIX-ERE, one capture
+	 * group, regcomp-verified. See #17. */
+	char *alt = NULL;
+	size_t acap = 0;
+	FILE *ap = open_memstream(&alt, &acap);
+	if (!ap)
+		return -1;
+	/* Determine whether to wrap in quotes (relative refs) or use a bare-URL
+	 * form (absolute URLs). Use the first selected candidate's raw_ref as
+	 * the signal: if it looks absolute (has "://"), all selected candidates
+	 * are likely absolute too, so use the bare-URL form without quotes. */
+	const char *first_raw = r->cands[sel[0]].raw_ref;
+	int use_quotes = !(first_raw && strstr(first_raw, "://"));
+	int oom = 0;
+	if (use_quotes)
+		oom = (fputs("[\"'](", ap) == EOF);
+	else
+		oom = (fputc('(', ap) == EOF);
+	for (size_t i = 0; i < nsel && !oom; i++) {
+		const scan_candidate_t *cand = &r->cands[sel[i]];
+		/* Pick the string that will appear in the page body. */
+		const char *ref = (cand->raw_ref && *cand->raw_ref)
+			? cand->raw_ref : cand->url;
+		char esc[2048];
+		if (ere_escape_url(ref, esc, sizeof(esc)) != 0) {
+			oom = 1;	/* ref too long for the buffer: bail */
+			break;
+		}
+		if (i > 0)
+			fputc('|', ap);
+		fputs(esc, ap);
+	}
+	if (!oom) {
+		if (use_quotes)
+			oom = (fputs(")[\"']", ap) == EOF);
+		else
+			oom = (fputc(')', ap) == EOF);
+	}
+	if (fclose(ap) != 0 || oom || !alt) {
+		free(alt);
+		return -1;
+	}
+
+	/* Verify the alternation compiles cleanly before emitting it. */
+	regex_t re;
+	if (regcomp(&re, alt, REG_EXTENDED) != 0) {
+		free(alt);
+		return -1;
+	}
+	regfree(&re);
+
+	char *host = url_host(r->page_url);
+	char name[128];
+	char match[256];
+	derive_name(host, name, sizeof(name));
+	derive_match(host, match, sizeof(match));
+	/* Anchor match to the landing directory so :port URLs are covered. */
+	char *dir = url_dir_path(r->page_url);
+	if (dir) {
+		match_append_path(match, sizeof(match), dir);
+		free(dir);
+	}
+
+	fprintf(out, "# Hyperflux extractor config (generated by --extract-scan)\n");
+	fprintf(out, "# Source page: %s\n", r->page_url);
+	fprintf(out, "# Review and edit before use: a config issues HTTP requests\n");
+	fprintf(out, "# with arbitrary headers. Treat shared configs like scripts.\n");
+	fprintf(out, "\n");
+	fprintf(out, "name   %s\n", name);
+	fprintf(out, "match  %s\n", match);
+	fprintf(out, "\n");
+	fprintf(out, "# %zu files selected from the scan; lists exactly those.\n", nsel);
+	fprintf(out, "get    page <- {url}\n");
+	fprintf(out, "list   eps  <- page regex %s\n", alt);
+	fprintf(out, "output {url}\n");
+
+	free(host);
+	free(alt);
 	return 0;
 }
 
